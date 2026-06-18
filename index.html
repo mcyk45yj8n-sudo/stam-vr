@@ -1,9 +1,10 @@
+<!-- STAM VR v4.3 -->
 <!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>STAM VR v4</title>
+<title>STAM VR v4.3</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#111;overflow:hidden;font-family:Arial,sans-serif;}
@@ -43,7 +44,7 @@ b{color:rgba(255,255,255,.8);}
 <body>
 <canvas id="c"></canvas>
 <div id="overlay">
-  <h1>STAM VR v4</h1>
+  <h1>STAM VR v4.3</h1>
   <p>
     <b>Rechter Controller</b><br>
     Trigger = Malen<br>
@@ -473,11 +474,12 @@ function drawPalette(mat,mvp){
 
   // Label: "Free Paint" by F. Stampa 2026 — rendered as textured quad
   if(labelTex){
-    // Z: bars bottom = PAL_W[0][2] + BARS[0][1] = 0.060 + 0.011 = 0.071
-    // Panel bottom = PAN_CZ + PAN_HH = 0.003 + 0.083 = 0.086
-    // Centre of gap: (0.071 + 0.086) / 2 = 0.079
-    var lw=localToWorld(mat,0,CY,0.079);
-    drawLabel(lw[0],lw[1],lw[2],Nx,Ny,Nz,Tx,Ty,Tz,Bx,By,Bz,L1,L1y,L1z,mvp);
+    // One full line below bars: bars bottom=0.071, line height≈0.014 → Z=0.085
+    // Panel bottom = 0.086, so text sits just inside bottom edge
+    var lw=localToWorld(mat,0,CY,0.083);
+    // L_label: very close to surface — just 1mm above panel
+    var Lx=Nx*0.001,Ly=Ny*0.001,Lz=Nz*0.001;
+    drawLabel(lw[0],lw[1],lw[2],Nx,Ny,Nz,Tx,Ty,Tz,Bx,By,Bz,Lx,Ly,Lz,mvp);
   }
 }
 
