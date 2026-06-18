@@ -152,25 +152,28 @@ var colorIdx=0, widthIdx=1;
 
 // Palette layout constants (controller-local space, metres)
 var CY=0.05;      // lift above controller (Y)
-var CR=0.0176;    // color disc radius (22mm * 0.8)
-var CS=0.052;     // color swatch spacing
-var WBS=0.052;    // width bar spacing
+var CR=0.0160;    // color disc radius — etwas kleiner für mehr Abstand zur Kante
+var CS=0.044;     // color swatch spacing — dichter zusammen (war 0.052)
+var WBS=0.052;    // width bar spacing — am Farbgitter ausgerichtet
 // Color positions: 2 rows of 4
 var PAL_C=[
-  [-CS*1.5,CY,-0.055],[-CS*0.5,CY,-0.055],[CS*0.5,CY,-0.055],[CS*1.5,CY,-0.055],
-  [-CS*1.5,CY, 0.010],[-CS*0.5,CY, 0.010],[CS*0.5,CY, 0.010],[CS*1.5,CY, 0.010],
+  [-CS*1.5,CY,-0.052],[-CS*0.5,CY,-0.052],[CS*0.5,CY,-0.052],[CS*1.5,CY,-0.052],
+  [-CS*1.5,CY, 0.008],[-CS*0.5,CY, 0.008],[CS*0.5,CY, 0.008],[CS*1.5,CY, 0.008],
 ];
-// Width bar positions: 1 row of 4
+// Width bar positions: 1 row of 4, spaced like colors
 var PAL_W=[
-  [-WBS*1.5,CY,0.080],[-WBS*0.5,CY,0.080],[WBS*0.5,CY,0.080],[WBS*1.5,CY,0.080],
+  [-CS*1.5,CY,0.072],[-CS*0.5,CY,0.072],[CS*0.5,CY,0.072],[CS*1.5,CY,0.072],
 ];
-// Width bar [half-width, half-height]
-var BARS=[[0.008,0.010],[0.014,0.010],[0.022,0.010],[0.034,0.010]];
-// Panel: snug rect around all elements
-var PAN_HW=0.098, PAN_HH=0.083, PAN_CZ=0.013;
+// Width bars HOCHKANT: gleiche Höhe, unterschiedliche Breite
+// [half-width, half-height] — height fixed tall, width varies
+var BARS=[[0.005,0.022],[0.009,0.022],[0.015,0.022],[0.024,0.022]];
+// Panel: snug rect around all elements + margin
+// Width: CS*3 + CR + 2×margin = 3*0.044 + 0.016 + 2*0.010 = 0.168 → HW=0.084
+// Height: from row1 (-0.052) to bars (0.072+0.022) = 0.116 → HH=0.063, centre=-0.052+0.063=0.011
+var PAN_HW=0.086, PAN_HH=0.066, PAN_CZ=0.010;
 // Hit radii
-var CHR=CR*2.5;   // color hit radius
-var WHR=0.030;    // width bar hit radius
+var CHR=CR*2.8;   // color hit radius
+var WHR=0.028;    // width bar hit radius
 
 // ── Geometry helpers ─────────────────────────────────────
 function upload(verts){
@@ -593,33 +596,35 @@ function startDesktop(){
     // Desktop palette preview (floats in front of scene)
     var pz=dcam.tgt[2]-0.5;
     var LO=0.003;
+    var DCS=0.120; // desktop color spacing
+    var DCR=0.044; // desktop color radius
     // Background panel
-    drawRect(-0.01,1.82,pz,0.30,0.20,1,0,0,0,1,0,0,0,0,mvp,[0.72,0.72,0.75]);
+    drawRect(-0.01,1.82,pz,0.240,0.185,1,0,0,0,1,0,0,0,0,mvp,[0.72,0.72,0.75]);
     // Colors row1
     for(var ci=0;ci<4;ci++){
-      var px=-0.19+ci*0.13,py=1.95;
+      var px=-0.175+ci*DCS,py=1.95;
       var isA=(ci===colorIdx),isH=(_hov&&_hov.type==='color'&&_hov.idx===ci);
-      if(isA){drawDisc(px,py,pz,CR*5.5,0,0,-1,0,0,-LO,mvp,[1,1,1]);drawDisc(px,py,pz,CR*4.6,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
-      else if(isH){drawDisc(px,py,pz,CR*5.2,0,0,-1,0,0,-LO,mvp,[1,0.88,0.1]);drawDisc(px,py,pz,CR*4.4,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
-      drawDisc(px,py,pz,CR*4.0,0,0,-1,0,0,-LO*3,mvp,COLORS[ci]);
+      if(isA){drawDisc(px,py,pz,DCR*1.32,0,0,-1,0,0,-LO,mvp,[1,1,1]);drawDisc(px,py,pz,DCR*1.12,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
+      else if(isH){drawDisc(px,py,pz,DCR*1.28,0,0,-1,0,0,-LO,mvp,[1,0.88,0.1]);drawDisc(px,py,pz,DCR*1.10,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
+      drawDisc(px,py,pz,DCR,0,0,-1,0,0,-LO*3,mvp,COLORS[ci]);
     }
     // Colors row2
     for(var ci=4;ci<8;ci++){
-      var px=-0.19+(ci-4)*0.13,py=1.82;
+      var px=-0.175+(ci-4)*DCS,py=1.82;
       var isA=(ci===colorIdx),isH=(_hov&&_hov.type==='color'&&_hov.idx===ci);
-      if(isA){drawDisc(px,py,pz,CR*5.5,0,0,-1,0,0,-LO,mvp,[1,1,1]);drawDisc(px,py,pz,CR*4.6,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
-      else if(isH){drawDisc(px,py,pz,CR*5.2,0,0,-1,0,0,-LO,mvp,[1,0.88,0.1]);drawDisc(px,py,pz,CR*4.4,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
-      drawDisc(px,py,pz,CR*4.0,0,0,-1,0,0,-LO*3,mvp,COLORS[ci]);
+      if(isA){drawDisc(px,py,pz,DCR*1.32,0,0,-1,0,0,-LO,mvp,[1,1,1]);drawDisc(px,py,pz,DCR*1.12,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
+      else if(isH){drawDisc(px,py,pz,DCR*1.28,0,0,-1,0,0,-LO,mvp,[1,0.88,0.1]);drawDisc(px,py,pz,DCR*1.10,0,0,-1,0,0,-LO*2,mvp,[0.72,0.72,0.75]);}
+      drawDisc(px,py,pz,DCR,0,0,-1,0,0,-LO*3,mvp,COLORS[ci]);
     }
-    // Width bars
+    // Width bars — hochkant, gleiche Höhe, unterschiedliche Breite
     for(var wi=0;wi<4;wi++){
-      var px=-0.19+wi*0.13,py=1.67;
-      var hw=BARS[wi][0]*5,hh=BARS[wi][1]*5;
-      var isA=(wi===widthIdx);
-      var bc=isA?[1,1,1]:[0.50,0.50,0.52];
-      drawRect(px,py,pz,hw+0.008,hh+0.008,1,0,0,0,1,0,0,0,-LO,mvp,bc);
+      var px=-0.175+wi*DCS,py=1.655;
+      var hw=BARS[wi][0]*4.5, hh=BARS[wi][1]*4.5;
+      var isA=(wi===widthIdx),isH=(_hov&&_hov.type==='width'&&_hov.idx===wi);
+      var bc=isA?[1,1,1]:(isH?[1,0.88,0.1]:[0.50,0.50,0.52]);
+      drawRect(px,py,pz,hw+0.010,hh+0.010,1,0,0,0,1,0,0,0,-LO,mvp,bc);
       drawRect(px,py,pz,hw,hh,1,0,0,0,1,0,0,0,-LO*2,mvp,[0.22,0.22,0.24]);
-      drawRect(px,py,pz,hw*0.85,hh*0.38,1,0,0,0,1,0,0,0,-LO*3,mvp,COLORS[colorIdx]);
+      drawRect(px,py,pz,hw*0.75,hh*0.85,1,0,0,0,1,0,0,0,-LO*3,mvp,COLORS[colorIdx]);
     }
   }
   dframe();
