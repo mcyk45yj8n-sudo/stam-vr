@@ -1,10 +1,10 @@
-<!-- STAM VR v4.3 -->
+<!-- STAM VR v4.4 -->
 <!DOCTYPE html>
 <html lang="de">
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
-<title>STAM VR v4.3</title>
+<title>STAM VR v4.4</title>
 <style>
 *{margin:0;padding:0;box-sizing:border-box;}
 body{background:#111;overflow:hidden;font-family:Arial,sans-serif;}
@@ -44,7 +44,7 @@ b{color:rgba(255,255,255,.8);}
 <body>
 <canvas id="c"></canvas>
 <div id="overlay">
-  <h1>STAM VR v4.3</h1>
+  <h1>STAM VR v4.4</h1>
   <p>
     <b>Rechter Controller</b><br>
     Trigger = Malen<br>
@@ -52,7 +52,8 @@ b{color:rgba(255,255,255,.8);}
     A = Undo &nbsp;·&nbsp; B = Alles löschen<br><br>
     <b>Linker Controller</b><br>
     Palette: 8 Farben + 4 Strichstärken<br>
-    Y = Hintergrund Schwarz/Weiß
+    Y = Hintergrund Schwarz/Weiß<br>
+    Linker Joystick hoch/runter = Graustufe
   </p>
   <button id="btn" disabled>Enter VR</button>
   <span id="status">Prüfe WebXR…</span>
@@ -487,7 +488,7 @@ function drawPalette(mat,mvp){
 var xrSession=null,xrRefSpace=null;
 var trigR=false,wasA=false,wasB=false,wasY=false;
 var leftMat=null,rightMat=null;
-var palLock=false,bgWhite=false;
+var palLock=false,bgLevel=0.04; // 0.0=schwarz, 1.0=weiß
 
 function tipPos(m){return[m[12]-m[8]*0.07,m[13]-m[9]*0.07,m[14]-m[10]*0.07];}
 
@@ -533,16 +534,24 @@ function onFrame(t,frame){
       wasA=aNow; wasB=bNow;
     }
     if(src.handedness==='left'&&gp2){
+      // Y-button (button[3]): toggle between black and white
       var yNow=gp2.buttons[3]?gp2.buttons[3].pressed:false;
-      if(yNow&&!wasY)bgWhite=!bgWhite;
+      if(yNow&&!wasY) bgLevel=(bgLevel>0.5)?0.04:0.95;
       wasY=yNow;
+      // Left joystick Y-axis (axes[3]): push up=brighter, down=darker
+      // axes[2]=X, axes[3]=Y (negative=up on most controllers)
+      var jy=gp2.axes[3]||0;
+      if(Math.abs(jy)>0.08){ // deadzone
+        bgLevel-=jy*0.012;   // negative jy = stick up = brighter
+        bgLevel=Math.max(0.0,Math.min(1.0,bgLevel));
+      }
     }
   }
 
   // Render
   var layer=xrSession.renderState.baseLayer;
   gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
-  gl.clearColor(bgWhite?0.95:0.04,bgWhite?0.95:0.04,bgWhite?0.95:0.07,1);
+  gl.clearColor(bgLevel,bgLevel,bgLevel,1);
   gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
 
   for(var vi=0;vi<pose.views.length;vi++){
@@ -676,14 +685,16 @@ function startDesktop(){
     if(e.key==='e')widthIdx=2; if(e.key==='r')widthIdx=3;
     if(e.key==='u'||e.key==='U')undoStroke();
     if(e.key==='c'||e.key==='C')clearAll();
-    if(e.key==='x'||e.key==='X')bgWhite=!bgWhite;
+    if(e.key==='x'||e.key==='X') bgLevel=(bgLevel>0.5)?0.04:0.95;
+    if(e.key==='+') bgLevel=Math.min(1.0,bgLevel+0.05);
+    if(e.key==='-') bgLevel=Math.max(0.0,bgLevel-0.05);
   });
 
   function dframe(){
     requestAnimationFrame(dframe);
     cv.width=window.innerWidth; cv.height=window.innerHeight;
     gl.viewport(0,0,cv.width,cv.height);
-    gl.clearColor(bgWhite?0.95:0.07,bgWhite?0.95:0.07,bgWhite?0.95:0.10,1);
+    gl.clearColor(bgLevel,bgLevel,bgLevel,1);
     gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
     var cam=dcamMatrix();
     var mvp=m4(); mul(mvp,makeProjMat(),cam.vm);
