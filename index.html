@@ -152,28 +152,29 @@ var colorIdx=0, widthIdx=1;
 
 // Palette layout constants (controller-local space, metres)
 var CY=0.05;      // lift above controller (Y)
-var CR=0.0160;    // color disc radius — etwas kleiner für mehr Abstand zur Kante
-var CS=0.044;     // color swatch spacing — dichter zusammen (war 0.052)
+var CR=0.0160;    // color disc radius
+var CS=0.044;     // color swatch spacing
 var WBS=0.052;    // width bar spacing — am Farbgitter ausgerichtet
 // Color positions: 2 rows of 4
 var PAL_C=[
   [-CS*1.5,CY,-0.052],[-CS*0.5,CY,-0.052],[CS*0.5,CY,-0.052],[CS*1.5,CY,-0.052],
   [-CS*1.5,CY, 0.008],[-CS*0.5,CY, 0.008],[CS*0.5,CY, 0.008],[CS*1.5,CY, 0.008],
 ];
-// Width bar positions: 1 row of 4, spaced like colors
+// Width bar positions: aligned with color columns
 var PAL_W=[
-  [-CS*1.5,CY,0.072],[-CS*0.5,CY,0.072],[CS*0.5,CY,0.072],[CS*1.5,CY,0.072],
+  [-CS*1.5,CY,0.060],[-CS*0.5,CY,0.060],[CS*0.5,CY,0.060],[CS*1.5,CY,0.060],
 ];
-// Width bars HOCHKANT: gleiche Höhe, unterschiedliche Breite
-// [half-width, half-height] — height fixed tall, width varies
-var BARS=[[0.005,0.022],[0.009,0.022],[0.015,0.022],[0.024,0.022]];
-// Panel: snug rect around all elements + margin
-// Width: CS*3 + CR + 2×margin = 3*0.044 + 0.016 + 2*0.010 = 0.168 → HW=0.084
-// Height: from row1 (-0.052) to bars (0.072+0.022) = 0.116 → HH=0.063, centre=-0.052+0.063=0.011
-var PAN_HW=0.086, PAN_HH=0.066, PAN_CZ=0.010;
+// Bars HOCHKANT, 50% kleiner: [half-width, half-height]
+var BARS=[[0.0025,0.011],[0.0045,0.011],[0.0075,0.011],[0.012,0.011]];
+// Panel — precisely calculated to contain all elements:
+// X: CS*1.5 + CR + PAD = 0.066 + 0.016 + 0.014 = 0.096 → PAN_HW
+// Z top:    -0.052 - CR  - PAD = -0.080
+// Z bottom:  0.060 + 0.011 + PAD = 0.085
+// PAN_CZ = (-0.080+0.085)/2 = 0.003, PAN_HH = (0.085+0.080)/2 = 0.083
+var PAN_HW=0.096, PAN_HH=0.083, PAN_CZ=0.003;
 // Hit radii
 var CHR=CR*2.8;   // color hit radius
-var WHR=0.028;    // width bar hit radius
+var WHR=0.025;    // width bar hit radius
 
 // ── Geometry helpers ─────────────────────────────────────
 function upload(verts){
