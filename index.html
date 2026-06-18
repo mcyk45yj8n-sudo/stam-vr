@@ -303,6 +303,95 @@ function undoStroke(){
 }
 function clearAll(){while(strokes.length)undoStroke();}
 
+// ── Label texture (Canvas2D → WebGL texture) ─────────────
+// Separate shader with UV support for the text quad
+var labelProg=(function(){
+  var VS2='attribute vec3 a;attribute vec2 uv;uniform mat4 M;varying vec2 vUV;void main(){gl_Position=M*vec4(a,1.);vUV=uv;}';
+  var FS2='precision mediump float;uniform sampler2D T;varying vec2 vUV;void main(){gl_FragColor=texture2D(T,vUV);}';
+  function sh(type,src){var s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
+  var p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS2));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS2));
+  gl.linkProgram(p);
+  return p;
+})();
+var lM=gl.getUniformLocation(labelProg,'M');
+var lT=gl.getUniformLocation(labelProg,'T');
+var lA=gl.getAttribLocation(labelProg,'a');
+var lUV=gl.getAttribLocation(labelProg,'uv');
+
+// Build text texture using Canvas 2D
+var labelTex=(function(){
+  var c=document.createElement('canvas');
+  c.width=512; c.height=64;
+  var ctx=c.getContext('2d');
+  ctx.clearRect(0,0,512,64);
+  ctx.fillStyle='rgba(0,0,0,0)';
+  ctx.fillRect(0,0,512,64);
+  ctx.font='bold 22px Arial';
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillStyle='rgba(30,30,35,0.85)';
+  ctx.fillText('"Free Paint" by F. Stampa 2026',256,32);
+  var tex=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return tex;
+})();
+
+// Label quad: PAN_HW wide, 0.008 tall, at given world position
+var labelBuf=(function(){
+  var hw=PAN_HW*0.88, hh=0.007;
+  // Will be built dynamically per frame since axes change with controller
+  return null;
+})();
+
+function drawLabel(cx,cy,cz, Nx,Ny,Nz, Tx,Ty,Tz, Bx,By,Bz, ox,oy,oz, mvp){
+  var hw=PAN_HW*0.88, hh=0.007;
+  var x=cx+ox, y=cy+oy, z=cz+oz;
+  // 4 corners with UV
+  var p0=[x-Tx*hw-Bx*hh, y-Ty*hw-By*hh, z-Tz*hw-Bz*hh];
+  var p1=[x+Tx*hw-Bx*hh, y+Ty*hw-By*hh, z+Tz*hw-Bz*hh];
+  var p2=[x+Tx*hw+Bx*hh, y+Ty*hw+By*hh, z+Tz*hw+Bz*hh];
+  var p3=[x-Tx*hw+Bx*hh, y-Ty*hw+By*hh, z-Tz*hw+Bz*hh];
+  // interleaved: x,y,z,u,v per vertex — but WebGL1 needs separate buffers
+  var pos=[p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
+           p0[0],p0[1],p0[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2]];
+  var uvs=[0,1, 1,1, 1,0,  0,1, 1,0, 0,0];
+  var pb=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(pos),gl.DYNAMIC_DRAW);
+  var ub=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(uvs),gl.DYNAMIC_DRAW);
+
+  gl.useProgram(labelProg);
+  gl.uniformMatrix4fv(lM,false,mvp);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,labelTex);
+  gl.uniform1i(lT,0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+  gl.enableVertexAttribArray(lA);
+  gl.vertexAttribPointer(lA,3,gl.FLOAT,false,0,0);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
+  gl.enableVertexAttribArray(lUV);
+  gl.vertexAttribPointer(lUV,2,gl.FLOAT,false,0,0);
+
+  gl.drawArrays(gl.TRIANGLES,0,6);
+
+  gl.disableVertexAttribArray(lUV);
+  gl.deleteBuffer(pb); gl.deleteBuffer(ub);
+  gl.useProgram(prog); // restore main shader
+}
+
 // ── Palette helpers ──────────────────────────────────────
 function localToWorld(mat,lx,ly,lz){
   return[mat[12]+mat[0]*lx+mat[4]*ly+mat[8]*lz,
@@ -378,10 +467,14 @@ function drawPalette(mat,mvp){
     var bCol=isA?[1,1,1]:(isH?[1,0.88,0.1]:[0.50,0.50,0.52]);
     // Border at L1
     drawRect(w[0],w[1],w[2],hw+0.005,hh+0.005,Tx,Ty,Tz,Bx,By,Bz,L1,L1y,L1z,mvp,bCol);
-    // Dark fill at L2
+    // Dark fill at L2 only — no colour stripe
     drawRect(w[0],w[1],w[2],hw,hh,Tx,Ty,Tz,Bx,By,Bz,L2,L2y,L2z,mvp,[0.22,0.22,0.24]);
-    // Colour stripe at L3
-    drawRect(w[0],w[1],w[2],hw*0.85,hh*0.38,Tx,Ty,Tz,Bx,By,Bz,L3,L3y,L3z,mvp,COLORS[colorIdx]);
+  }
+
+  // Label: "Free Paint" by F. Stampa 2026 — rendered as textured quad
+  if(labelTex){
+    var lw=localToWorld(mat,0,CY,PAN_CZ+PAN_HH-0.010); // bottom of panel
+    drawLabel(lw[0],lw[1],lw[2],Nx,Ny,Nz,Tx,Ty,Tz,Bx,By,Bz,L3,L3y,L3z,mvp);
   }
 }
 
@@ -625,7 +718,6 @@ function startDesktop(){
       var bc=isA?[1,1,1]:(isH?[1,0.88,0.1]:[0.50,0.50,0.52]);
       drawRect(px,py,pz,hw+0.010,hh+0.010,1,0,0,0,1,0,0,0,-LO,mvp,bc);
       drawRect(px,py,pz,hw,hh,1,0,0,0,1,0,0,0,-LO*2,mvp,[0.22,0.22,0.24]);
-      drawRect(px,py,pz,hw*0.75,hh*0.85,1,0,0,0,1,0,0,0,-LO*3,mvp,COLORS[colorIdx]);
     }
   }
   dframe();
