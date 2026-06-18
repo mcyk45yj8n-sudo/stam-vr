@@ -473,8 +473,11 @@ function drawPalette(mat,mvp){
 
   // Label: "Free Paint" by F. Stampa 2026 — rendered as textured quad
   if(labelTex){
-    var lw=localToWorld(mat,0,CY,PAN_CZ+PAN_HH-0.010); // bottom of panel
-    drawLabel(lw[0],lw[1],lw[2],Nx,Ny,Nz,Tx,Ty,Tz,Bx,By,Bz,L3,L3y,L3z,mvp);
+    // Z: bars bottom = PAL_W[0][2] + BARS[0][1] = 0.060 + 0.011 = 0.071
+    // Panel bottom = PAN_CZ + PAN_HH = 0.003 + 0.083 = 0.086
+    // Centre of gap: (0.071 + 0.086) / 2 = 0.079
+    var lw=localToWorld(mat,0,CY,0.079);
+    drawLabel(lw[0],lw[1],lw[2],Nx,Ny,Nz,Tx,Ty,Tz,Bx,By,Bz,L1,L1y,L1z,mvp);
   }
 }
 
