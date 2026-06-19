@@ -1,0 +1,534 @@
+<!-- STAM VR TWIN-BRUSH v1.0 -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>STAM VR Twin-Brush</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#111;overflow:hidden;font-family:Arial,sans-serif;}
+canvas{display:block;}
+#overlay{
+  position:fixed;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  background:radial-gradient(ellipse,#0d1117,#000);
+  z-index:10;gap:16px;padding:30px;text-align:center;
+}
+h1{color:#fff;font-size:clamp(18px,4vw,38px);font-weight:900;
+   letter-spacing:.1em;text-transform:uppercase;}
+p{color:rgba(255,255,255,.5);font-size:13px;line-height:1.85;max-width:380px;}
+b{color:rgba(255,255,255,.8);}
+#btn{
+  padding:12px 40px;border-radius:40px;
+  border:2px solid rgba(255,255,255,.6);background:transparent;
+  color:#fff;font-size:14px;letter-spacing:.15em;
+  text-transform:uppercase;cursor:pointer;transition:all .2s;
+}
+#btn:hover{background:rgba(255,255,255,.1);}
+#btn:disabled{opacity:.35;cursor:not-allowed;}
+#status{color:rgba(255,255,255,.3);font-size:11px;letter-spacing:.13em;text-transform:uppercase;}
+#hint{
+  position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.35);font-size:11px;letter-spacing:.1em;
+  text-align:center;display:none;z-index:5;
+}
+#hint.show{display:block;}
+#errbox{
+  display:none;position:fixed;top:0;left:0;right:0;
+  background:#c00;color:#fff;padding:12px;font-size:13px;
+  z-index:999;font-family:monospace;word-break:break-all;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <h1>STAM VR Twin-Brush</h1>
+  <p>
+    <b>Beide Controller malen gleichzeitig</b><br>
+    Trigger = Malen<br><br>
+    Joystick <b>links/rechts</b> = Farbe wechseln<br>
+    Joystick <b>hoch/runter</b> = Strichstärke<br><br>
+    A = Undo (rechts) &nbsp;·&nbsp; B = Alles löschen<br>
+    X = Hintergrund dunkler &nbsp;·&nbsp; Y = heller
+  </p>
+  <button id="btn" disabled>Enter VR</button>
+  <span id="status">Prüfe WebXR…</span>
+</div>
+<div id="hint">Klick+Ziehen=Malen · Rechtsklick=Drehen · Scroll=Zoom · 1-6=Farbe · Q/W/E/R=Breite · U=Undo · C=Löschen · X/Y=Hintergrund</div>
+<div id="errbox"></div>
+
+<script>
+window.onerror=function(msg,src,line,col){
+  var b=document.getElementById('errbox');
+  b.style.display='block';
+  b.textContent='Error L'+line+': '+msg;
+  return false;
+};
+
+// ═══════════════════════════════════════════════════════════
+//  STAM VR Twin-Brush — bimanual painting, zero dependencies
+// ═══════════════════════════════════════════════════════════
+
+var cv=document.getElementById('c');
+cv.width=window.innerWidth; cv.height=window.innerHeight;
+var gl=cv.getContext('webgl',{xrCompatible:true})||cv.getContext('experimental-webgl',{xrCompatible:true});
+if(!gl){document.getElementById('status').textContent='WebGL nicht verfügbar';}
+
+// ── Shader ───────────────────────────────────────────────
+var prog=(function(){
+  var VS='attribute vec3 a;uniform mat4 M;void main(){gl_Position=M*vec4(a,1.);}';
+  var FS='precision mediump float;uniform vec3 C;void main(){gl_FragColor=vec4(C,1.);}';
+  function sh(t,s){var o=gl.createShader(t);gl.shaderSource(o,s);gl.compileShader(o);
+    if(!gl.getShaderParameter(o,gl.COMPILE_STATUS))throw new Error('Shader: '+gl.getShaderInfoLog(o));
+    return o;}
+  var p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))throw new Error('Link: '+gl.getProgramInfoLog(p));
+  return p;
+})();
+gl.useProgram(prog);
+var uM=gl.getUniformLocation(prog,'M');
+var uC=gl.getUniformLocation(prog,'C');
+var aA=gl.getAttribLocation(prog,'a');
+gl.enable(gl.DEPTH_TEST);
+
+// ── Maths ────────────────────────────────────────────────
+function m4(){return new Float32Array(16);}
+function mul(o,a,b){for(var i=0;i<4;i++)for(var j=0;j<4;j++){o[j*4+i]=0;for(var k=0;k<4;k++)o[j*4+i]+=a[k*4+i]*b[j*4+k];}return o;}
+function inv(o,m){
+  var a=m[0],b=m[1],c=m[2],d=m[3],e=m[4],f=m[5],g=m[6],h=m[7],
+      i=m[8],j=m[9],k=m[10],l=m[11],n=m[12],p=m[13],q=m[14],r=m[15];
+  var b00=a*f-b*e,b01=a*g-c*e,b02=a*h-d*e,b03=b*g-c*f,b04=b*h-d*f,b05=c*h-d*g,
+      b06=i*p-j*n,b07=i*q-k*n,b08=i*r-l*n,b09=j*q-k*p,b10=j*r-l*p,b11=k*r-l*q;
+  var det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if(!det)return o; det=1/det;
+  o[0]=(f*b11-g*b10+h*b09)*det; o[1]=(c*b10-b*b11-d*b09)*det;
+  o[2]=(p*b05-q*b04+r*b03)*det; o[3]=(k*b04-j*b05-l*b03)*det;
+  o[4]=(g*b08-e*b11-h*b07)*det; o[5]=(a*b11-c*b08+d*b07)*det;
+  o[6]=(q*b02-n*b05-r*b01)*det; o[7]=(i*b05-k*b02+l*b01)*det;
+  o[8]=(e*b10-f*b08+h*b06)*det; o[9]=(b*b08-a*b10-d*b06)*det;
+  o[10]=(n*b04-p*b02+r*b00)*det;o[11]=(j*b02-i*b04-l*b00)*det;
+  o[12]=(f*b07-e*b09-g*b06)*det;o[13]=(a*b09-b*b07+c*b06)*det;
+  o[14]=(p*b01-n*b03-q*b00)*det;o[15]=(i*b03-j*b01+k*b00)*det;
+  return o;
+}
+function cross(ax,ay,az,bx,by,bz){return[ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx];}
+function norm(v){var l=Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);return l>0?[v[0]/l,v[1]/l,v[2]/l]:[0,1,0];}
+function dist3(ax,ay,az,bx,by,bz){var dx=bx-ax,dy=by-ay,dz=bz-az;return Math.sqrt(dx*dx+dy*dy+dz*dz);}
+
+// ── Palette data (no UI palette — just index arrays) ─────
+var COLORS=[
+  [0.85,0.12,0.12], // Rot
+  [0.10,0.55,0.18], // Grün
+  [0.10,0.30,0.85], // Blau
+  [0.92,0.82,0.08], // Gelb
+  [0.85,0.10,0.78], // Magenta
+  [0.96,0.96,0.96], // Weiß
+];
+var NCOL=COLORS.length;
+var WIDTHS=[0.003,0.008,0.018,0.029];
+var NWID=WIDTHS.length;
+
+// Per-hand state: independent color/width index for left & right
+var hand={
+  left:  {colorIdx:1, widthIdx:1}, // Grün default for left
+  right: {colorIdx:0, widthIdx:1}, // Rot default for right
+};
+
+// ── Geometry helpers ─────────────────────────────────────
+function upload(verts){
+  var arr=new Float32Array(verts);
+  var buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);
+  return{buf:buf,n:arr.length/3};
+}
+function drawGeo(geo,mvp,col){
+  gl.uniformMatrix4fv(uM,false,mvp);
+  gl.uniform3fv(uC,col);
+  gl.bindBuffer(gl.ARRAY_BUFFER,geo.buf);
+  gl.enableVertexAttribArray(aA);
+  gl.vertexAttribPointer(aA,3,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.TRIANGLES,0,geo.n);
+}
+function sphereGeo(x,y,z,r){
+  var v=[],ST=6,SL=8;
+  for(var ti=0;ti<ST;ti++)for(var pi=0;pi<SL;pi++){
+    var t0=Math.PI*ti/ST,t1=Math.PI*(ti+1)/ST;
+    var p0=2*Math.PI*pi/SL,p1=2*Math.PI*(pi+1)/SL;
+    var pts=[[r*Math.sin(t0)*Math.cos(p0)+x,r*Math.cos(t0)+y,r*Math.sin(t0)*Math.sin(p0)+z],
+             [r*Math.sin(t0)*Math.cos(p1)+x,r*Math.cos(t0)+y,r*Math.sin(t0)*Math.sin(p1)+z],
+             [r*Math.sin(t1)*Math.cos(p1)+x,r*Math.cos(t1)+y,r*Math.sin(t1)*Math.sin(p1)+z],
+             [r*Math.sin(t1)*Math.cos(p0)+x,r*Math.cos(t1)+y,r*Math.sin(t1)*Math.sin(p0)+z]];
+    v.push(pts[0][0],pts[0][1],pts[0][2],pts[1][0],pts[1][1],pts[1][2],pts[2][0],pts[2][1],pts[2][2],
+           pts[0][0],pts[0][1],pts[0][2],pts[2][0],pts[2][1],pts[2][2],pts[3][0],pts[3][1],pts[3][2]);
+  }
+  return upload(v);
+}
+function drawSphere(x,y,z,r,mvp,col){var g=sphereGeo(x,y,z,r);drawGeo(g,mvp,col);gl.deleteBuffer(g.buf);}
+
+// Cone (for brush-tip tool indicator) — apex at tip, base toward grip
+function coneGeo(apexX,apexY,apexZ, baseX,baseY,baseZ, r, segs){
+  segs=segs||10;
+  var dx=baseX-apexX,dy=baseY-apexY,dz=baseZ-apexZ;
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz)||0.0001;
+  var ux=dx/len,uy=dy/len,uz=dz/len;
+  var rx,ry,rz;
+  if(Math.abs(ux)<0.9){rx=0;ry=-uz;rz=uy;}else{rx=uz;ry=0;rz=-ux;}
+  var rl=Math.sqrt(rx*rx+ry*ry+rz*rz);rx/=rl;ry/=rl;rz/=rl;
+  var sx=uy*rz-uz*ry,sy=uz*rx-ux*rz,sz=ux*ry-uy*rx;
+  var v=[];
+  for(var i=0;i<segs;i++){
+    var a0=2*Math.PI*i/segs,a1=2*Math.PI*(i+1)/segs;
+    var c0=Math.cos(a0)*r,s0=Math.sin(a0)*r,c1=Math.cos(a1)*r,s1=Math.sin(a1)*r;
+    var p0=[baseX+c0*rx+s0*sx,baseY+c0*ry+s0*sy,baseZ+c0*rz+s0*sz];
+    var p1=[baseX+c1*rx+s1*sx,baseY+c1*ry+s1*sy,baseZ+c1*rz+s1*sz];
+    v.push(apexX,apexY,apexZ, p0[0],p0[1],p0[2], p1[0],p1[1],p1[2]);
+    // base cap
+    v.push(baseX,baseY,baseZ, p1[0],p1[1],p1[2], p0[0],p0[1],p0[2]);
+  }
+  return upload(v);
+}
+function drawCone(apexX,apexY,apexZ,baseX,baseY,baseZ,r,mvp,col){
+  var g=coneGeo(apexX,apexY,apexZ,baseX,baseY,baseZ,r);
+  drawGeo(g,mvp,col); gl.deleteBuffer(g.buf);
+}
+
+function ribbonSeg(ax,ay,az,bx,by,bz,half,ux,uy,uz){
+  var dx=bx-ax,dy=by-ay,dz=bz-az;
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(len<0.0001)return null;
+  var tx=dx/len,ty=dy/len,tz=dz/len;
+  var s=norm(cross(tx,ty,tz,ux,uy,uz));
+  var sx=s[0]*half,sy=s[1]*half,sz=s[2]*half;
+  return upload([ax-sx,ay-sy,az-sz,ax+sx,ay+sy,az+sz,bx+sx,by+sy,bz+sz,
+                 ax-sx,ay-sy,az-sz,bx+sx,by+sy,bz+sz,bx-sx,by-sy,bz-sz]);
+}
+
+var gridGeo=(function(){
+  var v=[],N=10,S=0.5;
+  for(var i=-N;i<=N;i++){v.push(i*S,0,-N*S,i*S,0,N*S);v.push(-N*S,0,i*S,N*S,0,i*S);}
+  var arr=new Float32Array(v),buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);
+  return{buf:buf,n:arr.length/3};
+})();
+function drawGrid(mvp){
+  gl.uniformMatrix4fv(uM,false,mvp);
+  gl.uniform3fv(uC,[0.1,0.1,0.15]);
+  gl.bindBuffer(gl.ARRAY_BUFFER,gridGeo.buf);
+  gl.enableVertexAttribArray(aA);
+  gl.vertexAttribPointer(aA,3,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.LINES,0,gridGeo.n);
+}
+
+// ── Strokes (shared pool, either hand can add) ────────────
+var strokes=[];
+var activeL=null,lastPtL=null;
+var activeR=null,lastPtR=null;
+
+function startStroke(side){
+  var st={color:COLORS[hand[side].colorIdx].slice(),half:WIDTHS[hand[side].widthIdx]/2,segs:[]};
+  strokes.push(st);
+  if(side==='left'){activeL=st;lastPtL=null;} else {activeR=st;lastPtR=null;}
+}
+function addPoint(side,x,y,z,ux,uy,uz){
+  var active = side==='left'?activeL:activeR;
+  if(!active)return;
+  var lastPt = side==='left'?lastPtL:lastPtR;
+  ux=ux||0;uy=uy||1;uz=uz||0;
+  if(lastPt){
+    var d=dist3(lastPt[0],lastPt[1],lastPt[2],x,y,z);
+    if(d<0.004)return;
+    var seg=ribbonSeg(lastPt[0],lastPt[1],lastPt[2],x,y,z,active.half,ux,uy,uz);
+    if(seg)active.segs.push(seg);
+    active.segs.push(sphereGeo(x,y,z,active.half));
+  }else{
+    active.segs.push(sphereGeo(x,y,z,active.half));
+  }
+  if(side==='left')lastPtL=[x,y,z]; else lastPtR=[x,y,z];
+}
+function endStroke(side){
+  var active = side==='left'?activeL:activeR;
+  if(active&&active.segs.length===0){
+    var idx=strokes.indexOf(active);
+    if(idx>=0)strokes.splice(idx,1);
+  }
+  if(side==='left'){activeL=null;lastPtL=null;} else {activeR=null;lastPtR=null;}
+}
+function undoStroke(){
+  if(!strokes.length)return;
+  var s=strokes.pop();
+  s.segs.forEach(function(g){gl.deleteBuffer(g.buf);});
+}
+function clearAll(){while(strokes.length)undoStroke();}
+
+// ── VR state ─────────────────────────────────────────────
+var xrSession=null,xrRefSpace=null;
+var trigL=false,trigR=false;
+var wasA=false,wasB=false,wasX=false,wasY=false;
+var leftMat=null,rightMat=null;
+var bgLevel=0.04;
+
+// Joystick debounce: discrete step per "click" of stick past threshold
+var stickState={left:{x:0,y:0},right:{x:0,y:0}};
+
+function tipPos(m){return[m[12]-m[8]*0.07,m[13]-m[9]*0.07,m[14]-m[10]*0.07];}
+function gripPos(m){return[m[12],m[13],m[14]];}
+
+function handleJoystick(side,gp){
+  var jx=gp.axes[2]||0, jy=gp.axes[3]||0;
+  var st=stickState[side];
+  var DEAD=0.55, STEP_COOLDOWN=0.35; // require strong push, then reset
+
+  // Horizontal: cycle color
+  if(Math.abs(jx)>DEAD && Math.abs(st.x)<=DEAD){
+    if(jx>0) hand[side].colorIdx=(hand[side].colorIdx+1)%NCOL;
+    else     hand[side].colorIdx=(hand[side].colorIdx-1+NCOL)%NCOL;
+  }
+  // Vertical: cycle width
+  if(Math.abs(jy)>DEAD && Math.abs(st.y)<=DEAD){
+    if(jy<0) hand[side].widthIdx=Math.min(NWID-1,hand[side].widthIdx+1); // up = thicker
+    else     hand[side].widthIdx=Math.max(0,hand[side].widthIdx-1);      // down = thinner
+  }
+  st.x=jx; st.y=jy;
+}
+
+function onFrame(t,frame){
+  xrSession.requestAnimationFrame(onFrame);
+  var pose=frame.getViewerPose(xrRefSpace);
+  if(!pose)return;
+
+  leftMat=null; rightMat=null;
+  for(var i=0;i<xrSession.inputSources.length;i++){
+    var src=xrSession.inputSources[i];
+    var gp=src.gripSpace?frame.getPose(src.gripSpace,xrRefSpace):null;
+    if(!gp)continue;
+    if(src.handedness==='right')rightMat=gp.transform.matrix;
+    if(src.handedness==='left') leftMat =gp.transform.matrix;
+  }
+
+  for(var i=0;i<xrSession.inputSources.length;i++){
+    var src=xrSession.inputSources[i];
+    var gp2=src.gamepad; if(!gp2)continue;
+    var side=src.handedness; // 'left' or 'right'
+    if(side!=='left'&&side!=='right')continue;
+    var mat=side==='left'?leftMat:rightMat;
+    if(!mat)continue;
+
+    handleJoystick(side,gp2);
+
+    var trig=gp2.buttons[0]?gp2.buttons[0].pressed:false;
+    var wasTrig = side==='left'?trigL:trigR;
+    var tip=tipPos(mat);
+
+    if(trig&&!wasTrig) startStroke(side);
+    if(!trig&&wasTrig) endStroke(side);
+    if(trig) addPoint(side,tip[0],tip[1],tip[2],mat[4],mat[5],mat[6]);
+
+    if(side==='left')trigL=trig; else trigR=trig;
+
+    // A/B on right controller: undo/clear
+    if(side==='right'){
+      var aNow=gp2.buttons[4]?gp2.buttons[4].pressed:false;
+      var bNow=gp2.buttons[5]?gp2.buttons[5].pressed:false;
+      if(aNow&&!wasA)undoStroke();
+      if(bNow&&!wasB)clearAll();
+      wasA=aNow; wasB=bNow;
+    }
+    // X/Y on left controller: background darker/lighter
+    if(side==='left'){
+      var xNow=gp2.buttons[4]?gp2.buttons[4].pressed:false; // X
+      var yNow=gp2.buttons[5]?gp2.buttons[5].pressed:false; // Y
+      if(xNow&&!wasX) bgLevel=Math.max(0.0,bgLevel-0.12);
+      if(yNow&&!wasY) bgLevel=Math.min(1.0,bgLevel+0.12);
+      wasX=xNow; wasY=yNow;
+    }
+  }
+
+  // Render
+  var layer=xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+  gl.clearColor(bgLevel,bgLevel,bgLevel,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  for(var vi=0;vi<pose.views.length;vi++){
+    var view=pose.views[vi];
+    var vp=layer.getViewport(view);
+    gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    var vm=m4(); inv(vm,view.transform.matrix);
+    var mvp=m4(); mul(mvp,view.projectionMatrix,vm);
+
+    drawGrid(mvp);
+    for(var si=0;si<strokes.length;si++){
+      var st=strokes[si];
+      for(var gi=0;gi<st.segs.length;gi++)drawGeo(st.segs[gi],mvp,st.color);
+    }
+
+    // Tool indicators at each controller tip — cone + sphere, current colour/size
+    if(leftMat)  drawToolIndicator(leftMat, hand.left.colorIdx, hand.left.widthIdx, mvp);
+    if(rightMat) drawToolIndicator(rightMat,hand.right.colorIdx,hand.right.widthIdx,mvp);
+  }
+}
+
+// Draw a clearly visible brush-tip tool indicator: cone pointing forward + tip sphere
+function drawToolIndicator(mat,colorIdx,widthIdx,mvp){
+  var col=COLORS[colorIdx];
+  var w=WIDTHS[widthIdx];
+  var grip=gripPos(mat);
+  var tip=tipPos(mat);
+  // Cone from grip to tip, radius scales with stroke width
+  var coneR=Math.max(0.006,w*0.9);
+  drawCone(tip[0],tip[1],tip[2], grip[0]+(-mat[8])*0.0,grip[1]+(-mat[9])*0.0,grip[2]+(-mat[10])*0.0, coneR, mvp, col);
+  // Bright tip sphere = exact brush size
+  drawSphere(tip[0],tip[1],tip[2], w/2, mvp, col);
+}
+
+// ── Enter VR ─────────────────────────────────────────────
+function enterVR(){
+  navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']})
+  .then(function(session){
+    xrSession=session;
+    session.updateRenderState({baseLayer:new XRWebGLLayer(session,gl)});
+    session.requestReferenceSpace('local-floor')
+    .catch(function(){return session.requestReferenceSpace('local');})
+    .then(function(rs){
+      xrRefSpace=rs;
+      document.getElementById('overlay').style.display='none';
+      session.requestAnimationFrame(onFrame);
+    });
+  }).catch(function(e){
+    document.getElementById('status').textContent='Fehler: '+e.message;
+  });
+}
+
+var btn=document.getElementById('btn');
+var statusEl=document.getElementById('status');
+if(navigator.xr){
+  navigator.xr.isSessionSupported('immersive-vr').then(function(ok){
+    if(ok){
+      statusEl.textContent='✓ Quest erkannt';
+      btn.disabled=false; btn.addEventListener('click',enterVR);
+    }else{
+      statusEl.textContent='Kein Headset — Desktop';
+      btn.textContent='Desktop-Modus'; btn.disabled=false;
+      btn.addEventListener('click',startDesktop);
+    }
+  });
+}else{
+  statusEl.textContent='WebXR nicht verfügbar';
+  btn.textContent='Desktop-Modus'; btn.disabled=false;
+  btn.addEventListener('click',startDesktop);
+}
+
+// ── Desktop fallback (single hand = mouse, simplified) ────
+var dcam={az:0,el:0.3,dist:2.5,tgt:[0,1.2,0]};
+function dcamMatrix(){
+  var sa=Math.sin(dcam.az),ca=Math.cos(dcam.az);
+  var se=Math.sin(dcam.el),ce=Math.cos(dcam.el);
+  var ex=dcam.tgt[0]+dcam.dist*ca*ce,ey=dcam.tgt[1]+dcam.dist*se,ez=dcam.tgt[2]+dcam.dist*sa*ce;
+  var fx=dcam.tgt[0]-ex,fy=dcam.tgt[1]-ey,fz=dcam.tgt[2]-ez;
+  var fl=Math.sqrt(fx*fx+fy*fy+fz*fz);fx/=fl;fy/=fl;fz/=fl;
+  var rx=fy*0-fz*1,ry=fz*0-fx*0,rz=fx*1-fy*0;
+  var rl=Math.sqrt(rx*rx+ry*ry+rz*rz);rx/=rl;ry/=rl;rz/=rl;
+  var ux=ry*fz-rz*fy,uy=rz*fx-rx*fz,uz=rx*fy-ry*fx;
+  var vm=m4();
+  vm[0]=rx;vm[1]=ux;vm[2]=-fx;vm[3]=0;
+  vm[4]=ry;vm[5]=uy;vm[6]=-fy;vm[7]=0;
+  vm[8]=rz;vm[9]=uz;vm[10]=-fz;vm[11]=0;
+  vm[12]=-(rx*ex+ry*ey+rz*ez);vm[13]=-(ux*ex+uy*ey+uz*ez);
+  vm[14]=(fx*ex+fy*ey+fz*ez);vm[15]=1;
+  return{vm:vm,eye:[ex,ey,ez]};
+}
+function makeProjMat(){
+  var f=70*Math.PI/180,asp=cv.width/cv.height,n=0.01,far=80,t=Math.tan(f/2),pm=m4();
+  pm[0]=1/(asp*t);pm[5]=1/t;pm[10]=(far+n)/(n-far);pm[11]=-1;pm[14]=2*far*n/(n-far);pm[15]=0;
+  return pm;
+}
+
+function startDesktop(){
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('hint').classList.add('show');
+  var drawing=false,rotating=false,lastMX=0,lastMY=0;
+
+  function getWorldPt(ex,ey){
+    var cam=dcamMatrix();
+    var asp=cv.width/cv.height,fov=70*Math.PI/180,t=Math.tan(fov/2);
+    var ndx=((ex/cv.width)*2-1),ndy=-(((ey/cv.height)*2-1));
+    var rdx=ndx*asp*t,rdy=ndy*t,rdz=-1;
+    var vm=cam.vm;
+    var wx=vm[0]*rdx+vm[1]*rdy+vm[2]*rdz;
+    var wy=vm[4]*rdx+vm[5]*rdy+vm[6]*rdz;
+    var wz=vm[8]*rdx+vm[9]*rdy+vm[10]*rdz;
+    var wl=Math.sqrt(wx*wx+wy*wy+wz*wz);wx/=wl;wy/=wl;wz/=wl;
+    if(Math.abs(wy)<0.001)return null;
+    var tt=(1.2-cam.eye[1])/wy;
+    if(tt<0)tt=Math.abs(tt);
+    return[cam.eye[0]+wx*tt,1.2,cam.eye[2]+wz*tt];
+  }
+
+  cv.addEventListener('mousedown',function(e){
+    if(e.button===0){drawing=true;startStroke('right');}
+    if(e.button===2){rotating=true;}
+    lastMX=e.clientX;lastMY=e.clientY;
+  });
+  cv.addEventListener('mousemove',function(e){
+    if(drawing){var p=getWorldPt(e.clientX,e.clientY);if(p)addPoint('right',p[0],p[1],p[2],0,0,-1);}
+    if(rotating){
+      dcam.az+=(e.clientX-lastMX)*0.005;
+      dcam.el-=(e.clientY-lastMY)*0.005;
+      dcam.el=Math.max(-1.2,Math.min(1.2,dcam.el));
+      lastMX=e.clientX;lastMY=e.clientY;
+    }
+  });
+  cv.addEventListener('mouseup',function(e){if(e.button===0){drawing=false;endStroke('right');}if(e.button===2)rotating=false;});
+  cv.addEventListener('mouseleave',function(){drawing=false;endStroke('right');rotating=false;});
+  cv.addEventListener('contextmenu',function(e){e.preventDefault();});
+  cv.addEventListener('wheel',function(e){dcam.dist=Math.max(0.3,Math.min(8,dcam.dist+e.deltaY*0.003));});
+
+  window.addEventListener('keydown',function(e){
+    var n=parseInt(e.key);
+    if(n>=1&&n<=6)hand.right.colorIdx=n-1;
+    if(e.key==='q')hand.right.widthIdx=0; if(e.key==='w')hand.right.widthIdx=1;
+    if(e.key==='e')hand.right.widthIdx=2; if(e.key==='r')hand.right.widthIdx=3;
+    if(e.key==='u'||e.key==='U')undoStroke();
+    if(e.key==='c'||e.key==='C')clearAll();
+    if(e.key==='x'||e.key==='X')bgLevel=Math.max(0.0,bgLevel-0.12);
+    if(e.key==='y'||e.key==='Y')bgLevel=Math.min(1.0,bgLevel+0.12);
+  });
+
+  function dframe(){
+    requestAnimationFrame(dframe);
+    cv.width=window.innerWidth; cv.height=window.innerHeight;
+    gl.viewport(0,0,cv.width,cv.height);
+    gl.clearColor(bgLevel,bgLevel,bgLevel,1);
+    gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+    var cam=dcamMatrix();
+    var mvp=m4(); mul(mvp,makeProjMat(),cam.vm);
+    drawGrid(mvp);
+    for(var si=0;si<strokes.length;si++){
+      var st=strokes[si];
+      for(var gi=0;gi<st.segs.length;gi++)drawGeo(st.segs[gi],mvp,st.color);
+    }
+    // Simple 2D color/width indicator top-left (text-free, just swatches)
+    for(var ci=0;ci<NCOL;ci++){
+      var px=-0.55+ci*0.10,py=1.95,pz=dcam.tgt[2]-0.5;
+      var isA=(ci===hand.right.colorIdx);
+      if(isA)drawSphere(px,py,pz,0.028,mvp,[1,1,1]);
+      drawSphere(px,py,pz,0.022,mvp,COLORS[ci]);
+    }
+  }
+  dframe();
+}
+
+window.addEventListener('resize',function(){
+  cv.width=window.innerWidth; cv.height=window.innerHeight;
+  gl.viewport(0,0,cv.width,cv.height);
+});
+</script>
+</body>
+</html>
