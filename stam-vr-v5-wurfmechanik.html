@@ -387,6 +387,12 @@ function releaseCharge(){
 }
 
 // Splatter shapes: random blobs around impact point on the canvas plane (local 2D coords)
+var _splatDepthCounter=0; // running counter for tiny per-splat depth offsets (avoids z-fighting)
+var _SPLAT_DEPTH_WRAP=2000; // wrap so depth offset never grows unbounded over a long session
+function nextSplatDepth(){
+  _splatDepthCounter=(_splatDepthCounter+1)%_SPLAT_DEPTH_WRAP;
+  return -0.0002*_splatDepthCounter - 0.00001; // never exactly 0, always behind the canvas surface a touch
+}
 function spawnSplatter(lx,ly,color,stage){
   var nSplats=3+stage*2;          // more blobs for bigger paint amount
   var baseR=0.018+stage*0.014;     // core splat radius
@@ -397,11 +403,13 @@ function spawnSplatter(lx,ly,color,stage){
     var dist=Math.random()*spreadR*(i===0?0.15:1.0); // first blob near centre (core hit)
     var px=lx+Math.cos(ang)*dist;
     var py=ly+Math.sin(ang)*dist;
-    var r=baseR*(0.35+Math.random()*0.85)*(i===0?1.6:1.0);
+    var r=baseR*(0.45+Math.random()*0.65)*(i===0?1.6:1.0);
     // clamp to canvas bounds so splats don't render off the panel
     px=Math.max(-CANVAS_HW+r*0.3,Math.min(CANVAS_HW-r*0.3,px));
     py=Math.max(-CANVAS_HH+r*0.3,Math.min(CANVAS_HH-r*0.3,py));
-    segs.push(splatDiscLocal(px,py,r));
+    // tiny, strictly increasing depth offset per splat → no two discs share a z-plane (no flicker)
+    var z=nextSplatDepth();
+    segs.push(splatDiscLocal(px,py,r,z));
   }
   // Drip streaks: 1-3 depending on amount, starting near impact, growing downward over time
   var nDrips=1+Math.floor(Math.random()*2)+Math.floor(stage/2);
@@ -414,20 +422,44 @@ function spawnSplatter(lx,ly,color,stage){
       len:0.004+Math.random()*0.01,
       maxLen:0.06+Math.random()*0.10+stage*0.03,
       speed:0.012+Math.random()*0.02,
-      w:0.004+Math.random()*0.004*(1+stage*0.3)
+      w:0.004+Math.random()*0.004*(1+stage*0.3),
+      z:nextSplatDepth()
     });
   }
   splatters.push({segs:segs,color:color.slice(),drips:drips,dripGeos:[]});
 }
 
-// Build a flat disc geometry directly in canvas-local XY plane (z=0), to be placed via canvas world transform
-function splatDiscLocal(lx,ly,r){
-  var SEG=10,v=[];
+// Build a rounder, more organic blob using smooth low-frequency radius variation
+// (a few random "lobes" instead of per-vertex noise) so edges look like a paint drop, not a jagged star.
+function splatDiscLocal(lx,ly,r,z){
+  z=z||0;
+  var SEG=20,v=[];
+  // 2-3 smooth lobes via a couple of sine harmonics with random phase/amount
+  var nHarm=2+Math.floor(Math.random()*2); // 2 or 3 harmonics
+  var harms=[];
+  for(var h=0;h<nHarm;h++){
+    harms.push({
+      freq:2+h,                              // low frequencies only → smooth bumps, not spikes
+      amp:0.10+Math.random()*0.16,           // gentle radius modulation
+      phase:Math.random()*Math.PI*2
+    });
+  }
+  function radiusAt(a){
+    var rr=1.0;
+    for(var h=0;h<harms.length;h++){
+      rr+=Math.sin(a*harms[h].freq+harms[h].phase)*harms[h].amp;
+    }
+    return r*Math.max(0.55,rr); // floor so it never pinches to a point
+  }
+  var pts=[];
   for(var i=0;i<SEG;i++){
-    var a0=2*Math.PI*i/SEG,a1=2*Math.PI*(i+1)/SEG;
-    // slight irregularity for organic splat edge
-    var r0=r*(0.8+Math.random()*0.4),r1=r*(0.8+Math.random()*0.4);
-    v.push(lx,ly,0, lx+Math.cos(a0)*r0,ly+Math.sin(a0)*r0,0, lx+Math.cos(a1)*r1,ly+Math.sin(a1)*r1,0);
+    var a=2*Math.PI*i/SEG;
+    var rr=radiusAt(a);
+    pts.push([lx+Math.cos(a)*rr, ly+Math.sin(a)*rr]);
+  }
+  for(var i=0;i<SEG;i++){
+    var p0=pts[i], p1=pts[(i+1)%SEG];
+    v.push(lx,ly,z, p0[0],p0[1],z, p1[0],p1[1],z);
   }
   return {local:upload(v)};
 }
@@ -455,9 +487,22 @@ function updateDrips(dt){
 
 function buildDripGeo(dr){
   var hw=dr.w/2;
+  var z=dr.z||0;
   var x0=dr.x,y0=dr.yTop,y1=dr.yTop-dr.len;
-  return upload([x0-hw,y0,0, x0+hw,y0,0, x0+hw,y1,0,
-                 x0-hw,y0,0, x0+hw,y1,0, x0-hw,y1,0]);
+  var v=[];
+  // Tapered body: slightly narrower at the trailing (top) end, slightly bulged near the bottom tip
+  var hwTop=hw*0.75, hwBot=hw*1.05;
+  v.push(x0-hwTop,y0,z, x0+hwTop,y0,z, x0+hwBot,y1,z,
+         x0-hwTop,y0,z, x0+hwBot,y1,z, x0-hwBot,y1,z);
+  // Rounded drop cap at the bottom tip (small fan of triangles instead of a hard square edge)
+  var capR=hwBot*1.15, capSeg=6;
+  for(var i=0;i<capSeg;i++){
+    var a0=Math.PI*i/capSeg, a1=Math.PI*(i+1)/capSeg; // half-circle facing downward
+    v.push(x0,y1,z,
+           x0+Math.cos(a0)*capR, y1-Math.sin(a0)*capR, z,
+           x0+Math.cos(a1)*capR, y1-Math.sin(a1)*capR, z);
+  }
+  return upload(v);
 }
 
 function updateProjectiles(dt,t){
