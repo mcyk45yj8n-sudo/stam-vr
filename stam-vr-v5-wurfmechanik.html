@@ -567,6 +567,12 @@ function clearAll(){
 
 // ── Render: splatters, drips, projectiles, charge blob ───
 function drawSplatters(mvp){
+  // Disable depth testing for the splatter layer only: all splats live on the same flat
+  // plane, so a tiny synthetic depth offset is fragile (it either causes z-fighting flicker
+  // when too small, or visibly pushes later splats "behind the canvas" when accumulated).
+  // Painting them back-to-front in creation order with depth test off avoids both problems —
+  // a later splat simply paints over an earlier one, like real paint on a canvas.
+  gl.disable(gl.DEPTH_TEST);
   for(var s=0;s<splatters.length;s++){
     var sp=splatters[s];
     for(var g=0;g<sp.segs.length;g++){
@@ -576,6 +582,7 @@ function drawSplatters(mvp){
       if(sp.dripGeos[d])drawLocalGeoOnCanvas(sp.dripGeos[d],mvp,sp.color);
     }
   }
+  gl.enable(gl.DEPTH_TEST);
 }
 // Draw a geometry defined in canvas-local XY(Z=0) space, placed at the fixed canvas world transform
 function drawLocalGeoOnCanvas(geo,mvp,col){
