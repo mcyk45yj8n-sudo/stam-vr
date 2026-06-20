@@ -389,10 +389,11 @@ function releaseCharge(){
 
 // Splatter shapes: random blobs around impact point on the canvas plane (local 2D coords)
 var _splatDepthCounter=0; // running counter for tiny per-splat depth offsets (avoids z-fighting)
-var _SPLAT_DEPTH_WRAP=2000; // wrap so depth offset never grows unbounded over a long session
+var _SPLAT_DEPTH_WRAP=40;   // wrap quickly — only needs to be unique among the few splats drawn this instant
+var _SPLAT_DEPTH_STEP=0.00002; // 0.02mm per step — enough to avoid z-fighting, far too small to see as a gap
 function nextSplatDepth(){
   _splatDepthCounter=(_splatDepthCounter+1)%_SPLAT_DEPTH_WRAP;
-  return -0.0002*_splatDepthCounter - 0.00001; // never exactly 0, always behind the canvas surface a touch
+  return -_SPLAT_DEPTH_STEP*_splatDepthCounter - 0.000005; // never exactly 0, always a hair behind the surface
 }
 function spawnSplatter(lx,ly,color,stage){
   var nSplats=3+stage*2;          // more blobs for bigger paint amount
