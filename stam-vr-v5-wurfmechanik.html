@@ -372,7 +372,7 @@ function releaseCharge(){
     }
     vel=[vel[0]*THROW_MULT,vel[1]*THROW_MULT,vel[2]*THROW_MULT];
     var sizeStage=widthIdx; // 0..3, reused as "paint amount"
-    var blobR=0.012+sizeStage*0.012; // projectile visual radius
+    var blobR=chargeBlobRadius(sizeStage); // same mapping as the charging-preview blob
     projectiles.push({
       pos:[last.x,last.y,last.z],
       vel:vel,
@@ -380,6 +380,7 @@ function releaseCharge(){
       r:blobR,
       stage:sizeStage,
       trail:[],
+      _firstStep:true,
       _born: (typeof performance!=='undefined'?performance.now()/1000:Date.now()/1000)
     });
   }
@@ -516,9 +517,21 @@ function updateProjectiles(dt,t){
     if(p.trail.length>14)p.trail.shift();
 
     var planeZ=CANVAS_CZ+0.016;
-    var hitCanvas = (p.pos[2]>planeZ && nz<=planeZ);
+    // Robust crossing test: catches the normal case (was in front, now behind/at the plane)
+    // AND the edge case where the projectile already starts behind/at the plane on its very
+    // first update step (e.g. release point was close to or past the canvas) — without this,
+    // such a projectile would never register as "crossing" and would fly through forever.
+    var wasInFront = p.pos[2]>planeZ;
+    var nowBehind = nz<=planeZ;
+    var hitCanvas = wasInFront ? nowBehind : (p._firstStep && nowBehind);
     if(hitCanvas){
-      var tt=(planeZ-p.pos[2])/(nz-p.pos[2]||1e-6);
+      var tt;
+      if(wasInFront){
+        tt=(planeZ-p.pos[2])/(nz-p.pos[2]||1e-6);
+      }else{
+        tt=1; // already past the plane at spawn — use the end point directly
+      }
+      tt=Math.max(0,Math.min(1,tt));
       var hx=p.pos[0]+(nx-p.pos[0])*tt;
       var hy=p.pos[1]+(ny-p.pos[1])*tt;
       var lx=hx-0, ly=hy-CANVAS_CY;
@@ -528,6 +541,7 @@ function updateProjectiles(dt,t){
         continue;
       }
     }
+    p._firstStep=false;
     // Floor/out-of-bounds cleanup
     var age=t-p._born;
     if(ny<0.0 || Math.abs(nx)>ROOM_HX+1 || Math.abs(nz)>ROOM_HZ+1 || age>4){
@@ -586,9 +600,15 @@ function drawProjectiles(mvp){
 function drawChargeBlob(rightMat,mvp){
   if(!charge)return;
   var tp=tipPos(rightMat);
-  var stage=widthIdx;
-  var r=0.008+stage*0.010; // grows with selected paint amount while charging
+  var stage=widthIdx; // 0..3, same selection as the palette's amount bars
+  var r=chargeBlobRadius(stage);
   drawSphere(tp[0],tp[1],tp[2],r,mvp,COLORS[colorIdx]);
+}
+// Shared radius mapping for "paint amount": small=subtle, large=clearly bigger.
+// Used both for the charging blob at the controller tip and the flying projectile.
+function chargeBlobRadius(stage){
+  var R=[0.010,0.018,0.028,0.040]; // metres, stage 0..3
+  return R[Math.max(0,Math.min(3,stage))];
 }
 
 // ── Label texture (Canvas2D → WebGL texture) ─────────────
@@ -1050,8 +1070,7 @@ function startDesktop(){
     drawProjectiles(mvp);
     if(charging){
       var hp=getHandWorldPos();
-      var stage=widthIdx;
-      var r=0.008+stage*0.010;
+      var r=chargeBlobRadius(widthIdx);
       drawSphere(hp[0],hp[1],hp[2],r,mvp,COLORS[colorIdx]);
     }
     // Desktop palette preview (floats in front of scene)
