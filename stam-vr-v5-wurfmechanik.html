@@ -313,22 +313,21 @@ function drawRoom(mvp){
   // Baseboard strip (subtle dark line floor/wall junction) — back wall only, simple visual anchor
   drawRect(0,0.03,-ROOM_HZ+0.002,ROOM_HX,0.03,1,0,0,0,1,0,0,0,0,mvp,[0.35,0.34,0.33]);
 
-  // ── Easel (angedeutet): two crossed back legs + front ledge + canvas frame ──
+  // ── Easel (angedeutet): two crossed back legs + front ledge ──
   var legCol=[0.30,0.20,0.13]; // wood brown
   var ez=CANVAS_CZ+0.06; // easel slightly behind/around canvas plane
-  // Front support leg (vertical-ish, centred under canvas)
-  drawRect(0, 0.45, ez+0.10, 0.018, 0.45, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
+  // Centre support leg — placed well BEHIND the canvas (not in front), so it never
+  // visually crosses or sits in front of the painting surface.
+  var ezBack=CANVAS_CZ-0.35;
+  drawRect(0, 0.45, ezBack, 0.018, 0.45, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
   // Two back legs (splayed) — approximate with thin rects
   drawRect(-0.32, 0.40, ez-0.30, 0.015, 0.55, 1,0,0, 0.15,1,0, 0,0,0, mvp, legCol);
   drawRect( 0.32, 0.40, ez-0.30, 0.015, 0.55, 1,0,0,-0.15,1,0, 0,0,0, mvp, legCol);
   // Horizontal ledge holding the canvas bottom
   drawRect(0, CANVAS_CY-CANVAS_HH-0.03, CANVAS_CZ+0.03, CANVAS_HW*0.9, 0.02, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
-  // Top crossbar
-  drawRect(0, CANVAS_CY+CANVAS_HH+0.10, ez, CANVAS_HW*0.55, 0.015, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
 
-  // ── Canvas frame (thin border) + white painting surface ──
-  drawRect(0,CANVAS_CY,CANVAS_CZ+0.012, CANVAS_HW+0.025, CANVAS_HH+0.025, 1,0,0, 0,1,0, 0,0,0, mvp, [0.42,0.30,0.20]);
-  drawRect(0,CANVAS_CY,CANVAS_CZ+0.015, CANVAS_HW, CANVAS_HH, 1,0,0, 0,1,0, 0,0,0, mvp, [0.97,0.97,0.95]);
+  // ── Canvas: borderless white painting surface (no frame) ──
+  drawRect(0,CANVAS_CY,CANVAS_CZ+0.015, CANVAS_HW+0.01, CANVAS_HH+0.01, 1,0,0, 0,1,0, 0,0,0, mvp, [0.97,0.97,0.95]);
 }
 
 // ── Throw projectiles + Canvas splatters ──────────────────
@@ -619,6 +618,7 @@ function chargeBlobRadius(stage){
   return R[Math.max(0,Math.min(3,stage))];
 }
 
+// ── Easel sign texture (separate from the palette label) ──
 // ── Label texture (Canvas2D → WebGL texture) ─────────────
 // Separate shader with UV support for the text quad
 var labelProg=(function(){
@@ -644,11 +644,11 @@ var labelTex=(function(){
   ctx.clearRect(0,0,512,64);
   ctx.fillStyle='rgba(0,0,0,0)';
   ctx.fillRect(0,0,512,64);
-  ctx.font='bold 22px Arial';
+  ctx.font='bold 19px Arial';
   ctx.textAlign='center';
   ctx.textBaseline='middle';
   ctx.fillStyle='rgba(30,30,35,0.85)';
-  ctx.fillText('"Free Paint" by F. Stampa 2026',256,32);
+  ctx.fillText('VR-ACTIONPAINTER by F.Stampa 2026',256,32);
   var tex=gl.createTexture();
   gl.bindTexture(gl.TEXTURE_2D,tex);
   gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
@@ -787,7 +787,7 @@ function drawPalette(mat,mvp){
     drawRect(w[0],w[1],w[2],hw,hh,Tx,Ty,Tz,Bx,By,Bz,L2,L2y,L2z,mvp,[0.22,0.22,0.24]);
   }
 
-  // Label: "Free Paint" by F. Stampa 2026 — rendered as textured quad
+  // Label: VR-ACTIONPAINTER by F.Stampa 2026 — rendered as textured quad
   if(labelTex){
     // One full line below bars: bars bottom=0.071, line height≈0.014 → Z=0.085
     // Panel bottom = 0.086, so text sits just inside bottom edge
