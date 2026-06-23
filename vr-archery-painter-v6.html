@@ -626,14 +626,17 @@ var BOW_TIP_B_LOCAL=[0.068, 0.0, -0.335];
 function bowModelMatrix(leftMat){
   var ax=leftMat[4],ay=leftMat[5],az=leftMat[6];     // controller "up" → mesh's long (Z) axis
   var alen=Math.sqrt(ax*ax+ay*ay+az*az)||1; ax/=alen;ay/=alen;az/=alen;
-  var rx=-leftMat[8],ry=-leftMat[9],rz=-leftMat[10]; // controller "forward" (away from palm) → mesh X
+  var rx=-leftMat[8],ry=-leftMat[9],rz=-leftMat[10]; // controller "forward" (away from palm) → mesh Y
   var rlen=Math.sqrt(rx*rx+ry*ry+rz*rz)||1; rx/=rlen;ry/=rlen;rz/=rlen;
-  // mesh Y axis = along × right, completes a right-handed orthonormal frame
-  var uxv=ay*rz-az*ry, uyv=az*rx-ax*rz, uzv=ax*ry-ay*rx;
+  // mesh X axis = mesh Y × mesh Z (= forward × along), completes a right-handed orthonormal frame.
+  // This is the previous frame rotated 90° around the bow's own long axis, so the bow's outward
+  // bow/curvature now points sideways relative to the controller instead of straight ahead —
+  // matching how a bow is actually held against the hand.
+  var uxv=ry*az-rz*ay, uyv=rz*ax-rx*az, uzv=rx*ay-ry*ax;
   var M=m4();
-  M[0]=rx; M[1]=ry; M[2]=rz; M[3]=0;     // mesh local X column
-  M[4]=uxv;M[5]=uyv;M[6]=uzv;M[7]=0;     // mesh local Y column
-  M[8]=ax; M[9]=ay; M[10]=az;M[11]=0;    // mesh local Z column (= long axis)
+  M[0]=uxv;M[1]=uyv;M[2]=uzv;M[3]=0;     // mesh local X column (rotated 90° from before)
+  M[4]=rx; M[5]=ry; M[6]=rz; M[7]=0;     // mesh local Y column
+  M[8]=ax; M[9]=ay; M[10]=az;M[11]=0;    // mesh local Z column (= long axis, unchanged)
   M[12]=leftMat[12]; M[13]=leftMat[13]; M[14]=leftMat[14]; M[15]=1;
   return M;
 }
@@ -655,16 +658,22 @@ function drawBow(leftMat,rightMat,mvp){
 
   var tipA=transformPoint(M,BOW_TIP_A_LOCAL);
   var tipB=transformPoint(M,BOW_TIP_B_LOCAL);
-  var bowPos=[leftMat[12],leftMat[13],leftMat[14]];
 
-  if(!rightMat)return;
+  if(!rightMat){
+    // No right hand tracked: still show the string relaxed, straight between the two real tips.
+    drawThickLine(tipA,tipB,0.003,mvp,[0.85,0.83,0.78]);
+    return;
+  }
   var stringPos=[rightMat[12],rightMat[13],rightMat[14]];
-  // While drawing, the string runs from each bow tip to the string (right) hand.
-  // At rest (no draw), it runs straight between the two tips for a relaxed look.
-  var restPoint=bowState?stringPos:bowPos;
   var stringCol=[0.85,0.83,0.78];
-  drawThickLine(tipA,restPoint,0.003,mvp,stringCol);
-  drawThickLine(tipB,restPoint,0.003,mvp,stringCol);
+  if(bowState){
+    // While drawing: string runs from each real tip to the string (right) hand.
+    drawThickLine(tipA,stringPos,0.003,mvp,stringCol);
+    drawThickLine(tipB,stringPos,0.003,mvp,stringCol);
+  }else{
+    // At rest: string runs directly tip-to-tip (never through the grip/middle of the bow).
+    drawThickLine(tipA,tipB,0.003,mvp,stringCol);
+  }
 
   if(bowState){
     var stage=widthIdx;
