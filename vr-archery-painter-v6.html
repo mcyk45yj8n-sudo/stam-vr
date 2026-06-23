@@ -1,0 +1,932 @@
+<!-- VR-ARCHERY-PAINTER v6.0 -->
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>VR-ARCHERY-PAINTER v6.0</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box;}
+body{background:#111;overflow:hidden;font-family:Arial,sans-serif;}
+canvas{display:block;}
+#overlay{
+  position:fixed;inset:0;display:flex;flex-direction:column;
+  align-items:center;justify-content:center;
+  background:radial-gradient(ellipse,#0d1117,#000);
+  z-index:10;gap:16px;padding:30px;text-align:center;
+}
+h1{color:#fff;font-size:clamp(18px,4vw,40px);font-weight:900;
+   letter-spacing:.1em;text-transform:uppercase;}
+p{color:rgba(255,255,255,.5);font-size:13px;line-height:1.9;max-width:360px;}
+b{color:rgba(255,255,255,.8);}
+#btn{
+  padding:12px 40px;border-radius:40px;
+  border:2px solid rgba(255,255,255,.6);background:transparent;
+  color:#fff;font-size:14px;letter-spacing:.15em;
+  text-transform:uppercase;cursor:pointer;transition:all .2s;
+}
+#btn:hover{background:rgba(255,255,255,.1);}
+#btn:disabled{opacity:.35;cursor:not-allowed;}
+#status{color:rgba(255,255,255,.3);font-size:11px;letter-spacing:.13em;text-transform:uppercase;}
+#hint{
+  position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
+  color:rgba(255,255,255,.35);font-size:11px;letter-spacing:.1em;
+  text-align:center;display:none;z-index:5;
+}
+#hint.show{display:block;}
+#errbox{
+  display:none;position:fixed;top:0;left:0;right:0;
+  background:#c00;color:#fff;padding:12px;font-size:13px;
+  z-index:999;font-family:monospace;word-break:break-all;
+}
+</style>
+</head>
+<body>
+<canvas id="c"></canvas>
+<div id="overlay">
+  <h1>VR-ARCHERY-PAINTER v6.0</h1>
+  <p>
+    <b>Linker Controller (Bogen)</b><br>
+    Joystick links/rechts = Farbe wählen (8 Farben)<br>
+    Joystick hoch/runter = Pfeilspitzengröße<br><br>
+    <b>Rechter Controller (Sehne)</b><br>
+    Trigger halten = Sehne greifen, Hand zurückziehen = spannen<br>
+    Trigger loslassen = Schuss<br>
+    A = Undo &nbsp;·&nbsp; B = Alles löschen
+  </p>
+  <button id="btn" disabled>Enter VR</button>
+  <span id="status">Prüfe WebXR…</span>
+</div>
+<div id="hint">VR-Headset erforderlich für die Bogen-Steuerung</div>
+<div id="errbox"></div>
+
+<script>
+// ── Global error display ─────────────────────────────────
+window.onerror = function(msg,src,line,col){
+  var b=document.getElementById('errbox');
+  b.style.display='block';
+  b.textContent='Error L'+line+': '+msg;
+  return false;
+};
+
+// ═══════════════════════════════════════════════════════════
+//  STAM VR v4  —  zero dependencies, raw WebGL1 + WebXR
+// ═══════════════════════════════════════════════════════════
+
+// ── Canvas + WebGL ───────────────────────────────────────
+var cv=document.getElementById('c');
+cv.width=window.innerWidth; cv.height=window.innerHeight;
+
+var gl = cv.getContext('webgl',{xrCompatible:true})
+      || cv.getContext('experimental-webgl',{xrCompatible:true});
+if(!gl){ document.getElementById('status').textContent='WebGL nicht verfügbar'; }
+
+// ── Shaders ──────────────────────────────────────────────
+var prog=(function(){
+  var VS='attribute vec3 a;uniform mat4 M;void main(){gl_Position=M*vec4(a,1.);}';
+  var FS='precision mediump float;uniform vec3 C;void main(){gl_FragColor=vec4(C,1.);}';
+  function sh(type,src){
+    var s=gl.createShader(type);
+    gl.shaderSource(s,src); gl.compileShader(s);
+    if(!gl.getShaderParameter(s,gl.COMPILE_STATUS))
+      throw new Error('Shader: '+gl.getShaderInfoLog(s));
+    return s;
+  }
+  var p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS));
+  gl.linkProgram(p);
+  if(!gl.getProgramParameter(p,gl.LINK_STATUS))
+    throw new Error('Link: '+gl.getProgramInfoLog(p));
+  return p;
+})();
+gl.useProgram(prog);
+var uM=gl.getUniformLocation(prog,'M');
+var uC=gl.getUniformLocation(prog,'C');
+var aA=gl.getAttribLocation(prog,'a');
+gl.enable(gl.DEPTH_TEST);
+
+// ── Maths ────────────────────────────────────────────────
+function m4(){return new Float32Array(16);}
+function mul(o,a,b){
+  for(var i=0;i<4;i++)for(var j=0;j<4;j++){
+    o[j*4+i]=0;
+    for(var k=0;k<4;k++)o[j*4+i]+=a[k*4+i]*b[j*4+k];
+  }return o;
+}
+function inv(o,m){
+  var a=m[0],b=m[1],c=m[2],d=m[3],e=m[4],f=m[5],g=m[6],h=m[7],
+      i=m[8],j=m[9],k=m[10],l=m[11],n=m[12],p=m[13],q=m[14],r=m[15];
+  var b00=a*f-b*e,b01=a*g-c*e,b02=a*h-d*e,b03=b*g-c*f,
+      b04=b*h-d*f,b05=c*h-d*g,b06=i*p-j*n,b07=i*q-k*n,
+      b08=i*r-l*n,b09=j*q-k*p,b10=j*r-l*p,b11=k*r-l*q;
+  var det=b00*b11-b01*b10+b02*b09+b03*b08-b04*b07+b05*b06;
+  if(!det)return o; det=1/det;
+  o[0]=(f*b11-g*b10+h*b09)*det; o[1]=(c*b10-b*b11-d*b09)*det;
+  o[2]=(p*b05-q*b04+r*b03)*det; o[3]=(k*b04-j*b05-l*b03)*det;
+  o[4]=(g*b08-e*b11-h*b07)*det; o[5]=(a*b11-c*b08+d*b07)*det;
+  o[6]=(q*b02-n*b05-r*b01)*det; o[7]=(i*b05-k*b02+l*b01)*det;
+  o[8]=(e*b10-f*b08+h*b06)*det; o[9]=(b*b08-a*b10-d*b06)*det;
+  o[10]=(n*b04-p*b02+r*b00)*det;o[11]=(j*b02-i*b04-l*b00)*det;
+  o[12]=(f*b07-e*b09-g*b06)*det;o[13]=(a*b09-b*b07+c*b06)*det;
+  o[14]=(p*b01-n*b03-q*b00)*det;o[15]=(i*b03-j*b01+k*b00)*det;
+  return o;
+}
+function cross(ax,ay,az,bx,by,bz){return[ay*bz-az*by,az*bx-ax*bz,ax*by-ay*bx];}
+function norm(v){var l=Math.sqrt(v[0]*v[0]+v[1]*v[1]+v[2]*v[2]);return l>0?[v[0]/l,v[1]/l,v[2]/l]:[0,1,0];}
+function dist3(ax,ay,az,bx,by,bz){var dx=bx-ax,dy=by-ay,dz=bz-az;return Math.sqrt(dx*dx+dy*dy+dz*dz);}
+
+// ── Palette data ─────────────────────────────────────────
+// Defined FIRST so startStroke() can access them safely
+var COLORS=[
+  [0.85,0.12,0.12], // Rot
+  [0.10,0.55,0.18], // Grün
+  [0.10,0.30,0.85], // Blau
+  [0.92,0.82,0.08], // Gelb
+  [0.85,0.10,0.78], // Magenta
+  [0.05,0.78,0.85], // Cyan
+  [0.96,0.96,0.96], // Weiß
+  [0.45,0.45,0.45], // Grau
+];
+var WIDTHS=[0.003,0.008,0.018,0.029];
+var colorIdx=0, widthIdx=1;
+
+// Palette layout constants (controller-local space, metres)
+var CY=0.05;      // lift above controller (Y)
+var CR=0.0160;    // color disc radius
+var CS=0.044;     // color swatch spacing
+var WBS=0.052;    // width bar spacing — am Farbgitter ausgerichtet
+// Color positions: 2 rows of 4
+var PAL_C=[
+  [-CS*1.5,CY,-0.052],[-CS*0.5,CY,-0.052],[CS*0.5,CY,-0.052],[CS*1.5,CY,-0.052],
+  [-CS*1.5,CY, 0.008],[-CS*0.5,CY, 0.008],[CS*0.5,CY, 0.008],[CS*1.5,CY, 0.008],
+];
+// Width bar positions: aligned with color columns
+var PAL_W=[
+  [-CS*1.5,CY,0.060],[-CS*0.5,CY,0.060],[CS*0.5,CY,0.060],[CS*1.5,CY,0.060],
+];
+// Bars HOCHKANT, 50% kleiner: [half-width, half-height]
+var BARS=[[0.0025,0.011],[0.0045,0.011],[0.0075,0.011],[0.012,0.011]];
+// Panel — precisely calculated to contain all elements:
+// X: CS*1.5 + CR + PAD = 0.066 + 0.016 + 0.014 = 0.096 → PAN_HW
+// Z top:    -0.052 - CR  - PAD = -0.080
+// Z bottom:  0.060 + 0.011 + PAD = 0.085
+// PAN_CZ = (-0.080+0.085)/2 = 0.003, PAN_HH = (0.085+0.080)/2 = 0.083
+var PAN_HW=0.096, PAN_HH=0.083, PAN_CZ=0.003;
+// Hit radii
+var CHR=CR*2.8;   // color hit radius
+var WHR=0.025;    // width bar hit radius
+
+// ── Geometry helpers ─────────────────────────────────────
+function upload(verts){
+  var arr=new Float32Array(verts);
+  var buf=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,buf);
+  gl.bufferData(gl.ARRAY_BUFFER,arr,gl.STATIC_DRAW);
+  return{buf:buf,n:arr.length/3};
+}
+function drawGeo(geo,mvp,col){
+  gl.uniformMatrix4fv(uM,false,mvp);
+  gl.uniform3fv(uC,col);
+  gl.bindBuffer(gl.ARRAY_BUFFER,geo.buf);
+  gl.enableVertexAttribArray(aA);
+  gl.vertexAttribPointer(aA,3,gl.FLOAT,false,0,0);
+  gl.drawArrays(gl.TRIANGLES,0,geo.n);
+}
+
+// Sphere
+function sphereGeo(x,y,z,r){
+  var v=[],ST=6,SL=8;
+  for(var ti=0;ti<ST;ti++)for(var pi=0;pi<SL;pi++){
+    var t0=Math.PI*ti/ST,t1=Math.PI*(ti+1)/ST;
+    var p0=2*Math.PI*pi/SL,p1=2*Math.PI*(pi+1)/SL;
+    var pts=[[r*Math.sin(t0)*Math.cos(p0)+x,r*Math.cos(t0)+y,r*Math.sin(t0)*Math.sin(p0)+z],
+             [r*Math.sin(t0)*Math.cos(p1)+x,r*Math.cos(t0)+y,r*Math.sin(t0)*Math.sin(p1)+z],
+             [r*Math.sin(t1)*Math.cos(p1)+x,r*Math.cos(t1)+y,r*Math.sin(t1)*Math.sin(p1)+z],
+             [r*Math.sin(t1)*Math.cos(p0)+x,r*Math.cos(t1)+y,r*Math.sin(t1)*Math.sin(p0)+z]];
+    v.push(pts[0][0],pts[0][1],pts[0][2],pts[1][0],pts[1][1],pts[1][2],pts[2][0],pts[2][1],pts[2][2],
+           pts[0][0],pts[0][1],pts[0][2],pts[2][0],pts[2][1],pts[2][2],pts[3][0],pts[3][1],pts[3][2]);
+  }
+  return upload(v);
+}
+function drawSphere(x,y,z,r,mvp,col){
+  var g=sphereGeo(x,y,z,r); drawGeo(g,mvp,col); gl.deleteBuffer(g.buf);
+}
+
+// Disc (flat circle facing normal nx,ny,nz, with normal-direction offset ox,oy,oz)
+function drawDisc(x,y,z,r,nx,ny,nz,ox,oy,oz,mvp,col){
+  var n=norm([nx,ny,nz]);
+  var t=(Math.abs(n[0])<0.9)?norm(cross(1,0,0,n[0],n[1],n[2])):norm(cross(0,1,0,n[0],n[1],n[2]));
+  var b=norm(cross(t[0],t[1],t[2],n[0],n[1],n[2]));
+  var cx=x+ox,cy=y+oy,cz=z+oz;
+  var v=[],SEG=24;
+  for(var i=0;i<SEG;i++){
+    var a0=2*Math.PI*i/SEG,a1=2*Math.PI*(i+1)/SEG;
+    var c0=Math.cos(a0)*r,s0=Math.sin(a0)*r,c1=Math.cos(a1)*r,s1=Math.sin(a1)*r;
+    v.push(cx,cy,cz,
+           cx+t[0]*c0+b[0]*s0,cy+t[1]*c0+b[1]*s0,cz+t[2]*c0+b[2]*s0,
+           cx+t[0]*c1+b[0]*s1,cy+t[1]*c1+b[1]*s1,cz+t[2]*c1+b[2]*s1);
+  }
+  var g=upload(v); drawGeo(g,mvp,col); gl.deleteBuffer(g.buf);
+}
+
+// Rectangle (flat, aligned to tx/bx axes, with normal-direction offset ox,oy,oz)
+function drawRect(cx,cy,cz,hw,hh,tx,ty,tz,bx,by,bz,ox,oy,oz,mvp,col){
+  var x=cx+ox,y=cy+oy,z=cz+oz;
+  var p0=[x-tx*hw-bx*hh,y-ty*hw-by*hh,z-tz*hw-bz*hh];
+  var p1=[x+tx*hw-bx*hh,y+ty*hw-by*hh,z+tz*hw-bz*hh];
+  var p2=[x+tx*hw+bx*hh,y+ty*hw+by*hh,z+tz*hw+bz*hh];
+  var p3=[x-tx*hw+bx*hh,y-ty*hw+by*hh,z-tz*hw+bz*hh];
+  var v=[p0[0],p0[1],p0[2],p1[0],p1[1],p1[2],p2[0],p2[1],p2[2],
+         p0[0],p0[1],p0[2],p2[0],p2[1],p2[2],p3[0],p3[1],p3[2]];
+  var g=upload(v); drawGeo(g,mvp,col); gl.deleteBuffer(g.buf);
+}
+
+// Ribbon stroke segment
+function ribbonSeg(ax,ay,az,bx,by,bz,half,ux,uy,uz){
+  var dx=bx-ax,dy=by-ay,dz=bz-az;
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(len<0.0001)return null;
+  var tx=dx/len,ty2=dy/len,tz=dz/len;
+  var s=norm(cross(tx,ty2,tz,ux,uy,uz));
+  var sx=s[0]*half,sy=s[1]*half,sz=s[2]*half;
+  return upload([ax-sx,ay-sy,az-sz,ax+sx,ay+sy,az+sz,bx+sx,by+sy,bz+sz,
+                 ax-sx,ay-sy,az-sz,bx+sx,by+sy,bz+sz,bx-sx,by-sy,bz-sz]);
+}
+
+// ── Outdoor scene (sky, horizon, sand ground) + Easel/Canvas ──
+// Ground is a large flat plane; sky is a big inward-facing dome-ish backdrop (simple layered quads).
+var GROUND_HALF=60.0;     // metres — large enough that the edge is never reached
+var SKY_DIST=55.0;        // distance of the sky backdrop panels
+var SKY_HEIGHT=40.0;
+
+// Canvas (Malfläche) on easel: large rectangle, facing player (+Z normal)
+var CANVAS_DIST=5.0;      // metres from origin (player start) — outdoor range
+var CANVAS_W=1.15, CANVAS_H=0.92; // canvas half-extents will be /2 below
+var CANVAS_HW=CANVAS_W/2, CANVAS_HH=CANVAS_H/2;
+var CANVAS_CY=1.35;        // canvas centre height
+var CANVAS_CZ=-CANVAS_DIST;
+var CANVAS_THICK=0.02;     // slight depth so it reads as a panel
+
+function groundGeo(){
+  var v=[];
+  v.push(-GROUND_HALF,0,-GROUND_HALF, GROUND_HALF,0,-GROUND_HALF, GROUND_HALF,0,GROUND_HALF,
+         -GROUND_HALF,0,-GROUND_HALF, GROUND_HALF,0,GROUND_HALF, -GROUND_HALF,0,GROUND_HALF);
+  return upload(v);
+}
+// Sky backdrop: 4 large vertical quads (one per side) plus a flat top — cheap stand-in for a dome.
+// Each quad uses the SAME flat colour (set in drawScene) to read as a seamless sky; a thin, slightly
+// brighter horizon band is drawn at ground level to sell the sense of distance/horizon line.
+function skyGeo(){
+  var v=[],H=SKY_HEIGHT,D=SKY_DIST;
+  function quad(p0,p1,p2,p3){
+    v.push(p0[0],p0[1],p0[2],p1[0],p1[1],p1[2],p2[0],p2[1],p2[2],
+           p0[0],p0[1],p0[2],p2[0],p2[1],p2[2],p3[0],p3[1],p3[2]);
+  }
+  quad([-D,0,-D],[-D,H,-D],[D,H,-D],[D,0,-D]); // back
+  quad([D,0,D],[D,H,D],[-D,H,D],[-D,0,D]);     // front
+  quad([-D,0,D],[-D,H,D],[-D,H,-D],[-D,0,-D]); // left
+  quad([D,0,-D],[D,H,-D],[D,H,D],[D,0,D]);     // right
+  // Top "ceiling" of the sky box so looking straight up isn't a void
+  v.push(-D,H,-D, -D,H,D, D,H,D,  -D,H,-D, D,H,D, D,H,-D);
+  return upload(v);
+}
+function horizonGeo(){
+  // Thin bright band right at the ground/sky seam, all the way around, to sell a horizon line
+  var v=[],D=SKY_DIST,h0=0.0,h1=1.4;
+  function quad(p0,p1,p2,p3){
+    v.push(p0[0],p0[1],p0[2],p1[0],p1[1],p1[2],p2[0],p2[1],p2[2],
+           p0[0],p0[1],p0[2],p2[0],p2[1],p2[2],p3[0],p3[1],p3[2]);
+  }
+  quad([-D,h0,-D],[-D,h1,-D],[D,h1,-D],[D,h0,-D]);
+  quad([D,h0,D],[D,h1,D],[-D,h1,D],[-D,h0,D]);
+  quad([-D,h0,D],[-D,h1,D],[-D,h1,-D],[-D,h0,-D]);
+  quad([D,h0,-D],[D,h1,-D],[D,h1,D],[D,h0,D]);
+  return upload(v);
+}
+var groundGeoObj=groundGeo(), skyGeoObj=skyGeo(), horizonGeoObj=horizonGeo();
+
+function drawRoom(mvp){
+  // Sky — soft pale blue
+  drawGeo(skyGeoObj,mvp,[0.55,0.72,0.88]);
+  // Horizon band — lighter, hazy transition between sky and ground
+  drawGeo(horizonGeoObj,mvp,[0.80,0.86,0.86]);
+  // Ground — flat sand colour
+  drawGeo(groundGeoObj,mvp,[0.80,0.70,0.52]);
+
+  // ── Easel (angedeutet): two crossed back legs + front ledge ──
+  var legCol=[0.30,0.20,0.13]; // wood brown
+  var ez=CANVAS_CZ+0.06; // easel slightly behind/around canvas plane
+  // Centre support leg — placed well BEHIND the canvas (not in front), so it never
+  // visually crosses or sits in front of the painting surface.
+  var ezBack=CANVAS_CZ-0.35;
+  drawRect(0, 0.45, ezBack, 0.018, 0.45, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
+  // Two back legs (splayed) — approximate with thin rects
+  drawRect(-0.32, 0.40, ez-0.30, 0.015, 0.55, 1,0,0, 0.15,1,0, 0,0,0, mvp, legCol);
+  drawRect( 0.32, 0.40, ez-0.30, 0.015, 0.55, 1,0,0,-0.15,1,0, 0,0,0, mvp, legCol);
+  // Horizontal ledge holding the canvas bottom
+  drawRect(0, CANVAS_CY-CANVAS_HH-0.03, CANVAS_CZ+0.03, CANVAS_HW*0.9, 0.02, 1,0,0, 0,1,0, 0,0,0, mvp, legCol);
+
+  // ── Canvas: borderless white painting surface (no frame) ──
+  drawRect(0,CANVAS_CY,CANVAS_CZ+0.015, CANVAS_HW+0.01, CANVAS_HH+0.01, 1,0,0, 0,1,0, 0,0,0, mvp, [0.97,0.97,0.95]);
+}
+
+// ── Throw projectiles + Canvas splatters ──────────────────
+var projectiles=[];   // flying paint blobs: {pos,vel,color,r,trail:[]}
+var splatters=[];     // landed paint on canvas: {segs:[],color, drips:[{x,y,len,target,speed}], bornAt}
+var GRAVITY=-1.6;      // m/s^2 — tuned so a roughly horizontal full-draw shot still reaches the canvas at 7m
+
+// ── Bow & arrow draw state (right hand draws the string relative to the left/bow hand) ──
+var bowState=null; // {restDist} — set when the trigger is first pressed
+var BOW_REST_GAP=0.10;   // metres — natural distance from bow hand to string hand at rest (undrawn)
+var BOW_MAX_DRAW=0.55;   // metres — draw distance that maps to maximum arrow speed
+var BOW_MIN_SPEED=2.0;   // m/s — minimum shot speed even on a very light draw
+var BOW_MAX_SPEED=10.0;  // m/s — shot speed at full draw, calibrated to reach a 7m canvas
+
+function startDraw(){
+  bowState={}; // marks "string is grabbed"; actual draw distance is computed live from hand positions
+}
+// Returns {drawAmount (0..1), dirX,dirY,dirZ, drawLen} given current left (bow) and right (string) hand positions.
+function computeDraw(leftPos,rightPos){
+  var dx=leftPos[0]-rightPos[0], dy=leftPos[1]-rightPos[1], dz=leftPos[2]-rightPos[2];
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  var drawLen=Math.max(0,len-BOW_REST_GAP);
+  var amount=Math.max(0,Math.min(1,drawLen/BOW_MAX_DRAW));
+  var inv=len>0.0001?1/len:0;
+  return {amount:amount, dx:dx*inv, dy:dy*inv, dz:dz*inv, drawLen:drawLen};
+}
+function releaseDraw(leftPos,rightPos){
+  if(!bowState)return;
+  var d=computeDraw(leftPos,rightPos);
+  var speed=BOW_MIN_SPEED+(BOW_MAX_SPEED-BOW_MIN_SPEED)*d.amount;
+  // Arrow flies from the string hand, along the bow-hand direction (string→bow extended), i.e. "forward"
+  // is the direction from the right (string) hand toward and past the left (bow) hand.
+  var vel=[d.dx*speed, d.dy*speed, d.dz*speed];
+  var sizeStage=widthIdx; // 0..3, reused as "paint amount" (now also the arrowhead/tip size)
+  var blobR=chargeBlobRadius(sizeStage);
+  projectiles.push({
+    pos:leftPos.slice(),
+    vel:vel,
+    color:COLORS[colorIdx].slice(),
+    r:blobR,
+    stage:sizeStage,
+    trail:[],
+    _firstStep:true,
+    _born: (typeof performance!=='undefined'?performance.now()/1000:Date.now()/1000)
+  });
+  bowState=null;
+}
+
+// Splatter shapes: random blobs around impact point on the canvas plane (local 2D coords)
+var _splatDepthCounter=0; // running counter for tiny per-splat depth offsets (avoids z-fighting)
+var _SPLAT_DEPTH_WRAP=40;   // wrap quickly — only needs to be unique among the few splats drawn this instant
+var _SPLAT_DEPTH_STEP=0.00002; // 0.02mm per step — enough to avoid z-fighting, far too small to see as a gap
+function nextSplatDepth(){
+  _splatDepthCounter=(_splatDepthCounter+1)%_SPLAT_DEPTH_WRAP;
+  return -_SPLAT_DEPTH_STEP*_splatDepthCounter - 0.000005; // never exactly 0, always a hair behind the surface
+}
+function spawnSplatter(lx,ly,color,stage){
+  var nSplats=3+stage*2;          // more blobs for bigger paint amount
+  var baseR=0.018+stage*0.014;     // core splat radius
+  var spreadR=0.05+stage*0.05;     // how far chaos spreads
+  var segs=[];
+  for(var i=0;i<nSplats;i++){
+    var ang=Math.random()*Math.PI*2;
+    var dist=Math.random()*spreadR*(i===0?0.15:1.0); // first blob near centre (core hit)
+    var px=lx+Math.cos(ang)*dist;
+    var py=ly+Math.sin(ang)*dist;
+    var r=baseR*(0.45+Math.random()*0.65)*(i===0?1.6:1.0);
+    // clamp to canvas bounds so splats don't render off the panel
+    px=Math.max(-CANVAS_HW+r*0.3,Math.min(CANVAS_HW-r*0.3,px));
+    py=Math.max(-CANVAS_HH+r*0.3,Math.min(CANVAS_HH-r*0.3,py));
+    // tiny, strictly increasing depth offset per splat → no two discs share a z-plane (no flicker)
+    var z=nextSplatDepth();
+    segs.push(splatDiscLocal(px,py,r,z));
+  }
+  // Drip streaks: 1-3 depending on amount, starting near impact, growing downward over time
+  var nDrips=1+Math.floor(Math.random()*2)+Math.floor(stage/2);
+  var drips=[];
+  for(var d=0;d<nDrips;d++){
+    var dx=lx+(Math.random()-0.5)*spreadR*0.8;
+    var dy=ly-Math.random()*0.02;
+    drips.push({
+      x:dx, yTop:dy,
+      len:0.004+Math.random()*0.01,
+      maxLen:0.06+Math.random()*0.10+stage*0.03,
+      speed:0.012+Math.random()*0.02,
+      w:0.004+Math.random()*0.004*(1+stage*0.3),
+      z:nextSplatDepth()
+    });
+  }
+  splatters.push({segs:segs,color:color.slice(),drips:drips,dripGeos:[]});
+}
+
+// Build a rounder, more organic blob using smooth low-frequency radius variation
+// (a few random "lobes" instead of per-vertex noise) so edges look like a paint drop, not a jagged star.
+function splatDiscLocal(lx,ly,r,z){
+  z=z||0;
+  var SEG=20,v=[];
+  // 2-3 smooth lobes via a couple of sine harmonics with random phase/amount
+  var nHarm=2+Math.floor(Math.random()*2); // 2 or 3 harmonics
+  var harms=[];
+  for(var h=0;h<nHarm;h++){
+    harms.push({
+      freq:2+h,                              // low frequencies only → smooth bumps, not spikes
+      amp:0.10+Math.random()*0.16,           // gentle radius modulation
+      phase:Math.random()*Math.PI*2
+    });
+  }
+  function radiusAt(a){
+    var rr=1.0;
+    for(var h=0;h<harms.length;h++){
+      rr+=Math.sin(a*harms[h].freq+harms[h].phase)*harms[h].amp;
+    }
+    return r*Math.max(0.55,rr); // floor so it never pinches to a point
+  }
+  var pts=[];
+  for(var i=0;i<SEG;i++){
+    var a=2*Math.PI*i/SEG;
+    var rr=radiusAt(a);
+    pts.push([lx+Math.cos(a)*rr, ly+Math.sin(a)*rr]);
+  }
+  for(var i=0;i<SEG;i++){
+    var p0=pts[i], p1=pts[(i+1)%SEG];
+    v.push(lx,ly,z, p0[0],p0[1],z, p1[0],p1[1],z);
+  }
+  return {local:upload(v)};
+}
+
+// Canvas world transform is fixed (easel doesn't move): origin at canvas centre, X=right, Y=up, Z=normal(+Z toward room/player)
+function canvasLocalToWorld(lx,ly,lz){
+  return [lx, CANVAS_CY+ly, CANVAS_CZ+0.016+(lz||0)];
+}
+
+function updateDrips(dt){
+  for(var s=0;s<splatters.length;s++){
+    var sp=splatters[s];
+    for(var d=0;d<sp.drips.length;d++){
+      var dr=sp.drips[d];
+      if(dr.len<dr.maxLen){
+        dr.len=Math.min(dr.maxLen,dr.len+dr.speed*dt);
+        if(sp.dripGeos[d])gl.deleteBuffer(sp.dripGeos[d].buf);
+        sp.dripGeos[d]=buildDripGeo(dr);
+      }else if(!sp.dripGeos[d]){
+        sp.dripGeos[d]=buildDripGeo(dr);
+      }
+    }
+  }
+}
+
+function buildDripGeo(dr){
+  var hw=dr.w/2;
+  var z=dr.z||0;
+  var x0=dr.x,y0=dr.yTop,y1=dr.yTop-dr.len;
+  var v=[];
+  // Tapered body: slightly narrower at the trailing (top) end, slightly bulged near the bottom tip
+  var hwTop=hw*0.75, hwBot=hw*1.05;
+  v.push(x0-hwTop,y0,z, x0+hwTop,y0,z, x0+hwBot,y1,z,
+         x0-hwTop,y0,z, x0+hwBot,y1,z, x0-hwBot,y1,z);
+  // Rounded drop cap at the bottom tip (small fan of triangles instead of a hard square edge)
+  var capR=hwBot*1.15, capSeg=6;
+  for(var i=0;i<capSeg;i++){
+    var a0=Math.PI*i/capSeg, a1=Math.PI*(i+1)/capSeg; // half-circle facing downward
+    v.push(x0,y1,z,
+           x0+Math.cos(a0)*capR, y1-Math.sin(a0)*capR, z,
+           x0+Math.cos(a1)*capR, y1-Math.sin(a1)*capR, z);
+  }
+  return upload(v);
+}
+
+function updateProjectiles(dt,t){
+  for(var i=projectiles.length-1;i>=0;i--){
+    var p=projectiles[i];
+    p.vel[1]+=GRAVITY*dt;
+    var nx=p.pos[0]+p.vel[0]*dt;
+    var ny=p.pos[1]+p.vel[1]*dt;
+    var nz=p.pos[2]+p.vel[2]*dt;
+    p.trail.push([p.pos[0],p.pos[1],p.pos[2]]);
+    if(p.trail.length>14)p.trail.shift();
+
+    var planeZ=CANVAS_CZ+0.016;
+    // Robust crossing test: catches the normal case (was in front, now behind/at the plane)
+    // AND the edge case where the projectile already starts behind/at the plane on its very
+    // first update step (e.g. release point was close to or past the canvas) — without this,
+    // such a projectile would never register as "crossing" and would fly through forever.
+    var wasInFront = p.pos[2]>planeZ;
+    var nowBehind = nz<=planeZ;
+    var hitCanvas = wasInFront ? nowBehind : (p._firstStep && nowBehind);
+    if(hitCanvas){
+      var tt;
+      if(wasInFront){
+        tt=(planeZ-p.pos[2])/(nz-p.pos[2]||1e-6);
+      }else{
+        tt=0; // already at/behind the plane at the START of this step — use the start point, not the end
+      }
+      tt=Math.max(0,Math.min(1,tt));
+      var hx=p.pos[0]+(nx-p.pos[0])*tt;
+      var hy=p.pos[1]+(ny-p.pos[1])*tt;
+      var lx=hx-0, ly=hy-CANVAS_CY;
+      if(Math.abs(lx)<CANVAS_HW+0.06 && Math.abs(ly)<CANVAS_HH+0.06){
+        spawnSplatter(lx,ly,p.color,p.stage);
+        projectiles.splice(i,1);
+        continue;
+      }
+    }
+    p._firstStep=false;
+    // Floor/out-of-bounds cleanup
+    var age=t-p._born;
+    if(ny<0.0 || Math.abs(nx)>GROUND_HALF || Math.abs(nz)>GROUND_HALF || age>8){
+      projectiles.splice(i,1);
+      continue;
+    }
+    p.pos=[nx,ny,nz];
+  }
+}
+
+function undoStroke(){
+  if(!splatters.length)return;
+  var s=splatters.pop();
+  s.segs.forEach(function(g){gl.deleteBuffer(g.local.buf);});
+  s.dripGeos.forEach(function(g){if(g)gl.deleteBuffer(g.buf);});
+}
+function clearAll(){
+  while(splatters.length)undoStroke();
+  projectiles.length=0;
+  bowState=null;
+}
+
+// ── Render: splatters, drips, projectiles, bow & arrow ───
+function drawSplatters(mvp){
+  // Disable depth testing for the splatter layer only: all splats live on the same flat
+  // plane, so a tiny synthetic depth offset is fragile (it either causes z-fighting flicker
+  // when too small, or visibly pushes later splats "behind the canvas" when accumulated).
+  // Painting them back-to-front in creation order with depth test off avoids both problems —
+  // a later splat simply paints over an earlier one, like real paint on a canvas.
+  gl.disable(gl.DEPTH_TEST);
+  for(var s=0;s<splatters.length;s++){
+    var sp=splatters[s];
+    for(var g=0;g<sp.segs.length;g++){
+      drawLocalGeoOnCanvas(sp.segs[g].local,mvp,sp.color);
+    }
+    for(var d=0;d<sp.drips.length;d++){
+      if(sp.dripGeos[d])drawLocalGeoOnCanvas(sp.dripGeos[d],mvp,sp.color);
+    }
+  }
+  gl.enable(gl.DEPTH_TEST);
+}
+// Draw a geometry defined in canvas-local XY(Z=0) space, placed at the fixed canvas world transform
+function drawLocalGeoOnCanvas(geo,mvp,col){
+  // Canvas is axis-aligned (no rotation), so local->world is just translation
+  var M2=m4();
+  M2[0]=1;M2[5]=1;M2[10]=1;M2[15]=1;
+  M2[12]=0;M2[13]=CANVAS_CY;M2[14]=CANVAS_CZ+0.016;
+  var worldMVP=m4(); mul(worldMVP,mvp,M2);
+  drawGeo(geo,worldMVP,col);
+}
+function drawProjectiles(mvp){
+  for(var i=0;i<projectiles.length;i++){
+    var p=projectiles[i];
+    drawSphere(p.pos[0],p.pos[1],p.pos[2],p.r,mvp,p.color);
+    // simple trail: small shrinking spheres
+    for(var tI=0;tI<p.trail.length;tI++){
+      var f=tI/p.trail.length;
+      var tp=p.trail[tI];
+      drawSphere(tp[0],tp[1],tp[2],p.r*0.5*f,mvp,p.color);
+    }
+  }
+}
+// ── Bow visuals: bow body at the left hand, string from the bow tips to the right (draw) hand,
+// and the paint blob sitting at the string hand (= the arrow's tip) while drawn. ──
+var BOW_HALF_LEN=0.30; // metres, half the bow's height when seen from the front
+
+function drawBow(leftMat,rightMat,mvp){
+  if(!leftMat)return;
+  var bowPos=[leftMat[12],leftMat[13],leftMat[14]];
+  // Bow's own "up" axis (along the controller's local Y) so it visually follows hand rotation
+  var ux=leftMat[4],uy=leftMat[5],uz=leftMat[6];
+  var ulen=Math.sqrt(ux*ux+uy*uy+uz*uz)||1; ux/=ulen;uy/=ulen;uz/=ulen;
+  var tipA=[bowPos[0]+ux*BOW_HALF_LEN, bowPos[1]+uy*BOW_HALF_LEN, bowPos[2]+uz*BOW_HALF_LEN];
+  var tipB=[bowPos[0]-ux*BOW_HALF_LEN, bowPos[1]-uy*BOW_HALF_LEN, bowPos[2]-uz*BOW_HALF_LEN];
+
+  // Bow stave: slightly curved look approximated with 3 straight thin segments
+  var bowCol=[0.32,0.21,0.12];
+  drawThickLine(tipA,bowPos,0.012,mvp,bowCol);
+  drawThickLine(bowPos,tipB,0.012,mvp,bowCol);
+
+  // Engraved label along the lower half of the stave, facing outward (away from the player's body)
+  if(labelTex){
+    // Outward-facing normal: controller's local -Z (away from the palm), a reasonable "front" of the bow
+    var fx=-leftMat[8],fy=-leftMat[9],fz=-leftMat[10];
+    var flen=Math.sqrt(fx*fx+fy*fy+fz*fz)||1; fx/=flen;fy/=flen;fz/=flen;
+    // Bitangent = Normal × Tangent, so the label quad isn't degenerate
+    var bxL=fy*uz-fz*uy, byL=fz*ux-fx*uz, bzL=fx*uy-fy*ux;
+    var blenL=Math.sqrt(bxL*bxL+byL*byL+bzL*bzL)||1; bxL/=blenL;byL/=blenL;bzL/=blenL;
+    var midx=(bowPos[0]+tipB[0])/2, midy=(bowPos[1]+tipB[1])/2, midz=(bowPos[2]+tipB[2])/2;
+    var labelHalfLen=BOW_HALF_LEN*0.85, labelHalfWidth=0.018;
+    drawLabel(midx,midy,midz, fx,fy,fz, ux,uy,uz, bxL,byL,bzL, fx*0.013,fy*0.013,fz*0.013, labelHalfLen,labelHalfWidth, mvp);
+  }
+
+  if(!rightMat)return;
+  var stringPos=[rightMat[12],rightMat[13],rightMat[14]];
+  // While drawing, the string runs from each bow tip to the string (right) hand.
+  // At rest (no draw), it runs straight between the two tips for a relaxed look.
+  var restPoint=bowState?stringPos:bowPos;
+  var stringCol=[0.85,0.83,0.78];
+  drawThickLine(tipA,restPoint,0.003,mvp,stringCol);
+  drawThickLine(tipB,restPoint,0.003,mvp,stringCol);
+
+  if(bowState){
+    var d=computeDraw(bowPos,stringPos);
+    var stage=widthIdx;
+    var r=chargeBlobRadius(stage);
+    // The paint blob (= arrow tip / nock point) sits at the string hand while drawing
+    drawSphere(stringPos[0],stringPos[1],stringPos[2],r,mvp,COLORS[colorIdx]);
+  }
+}
+// Draw a thin "line" as a camera-agnostic thin box between two points (reuses the rect helper
+// by building an axis along the segment and a fixed-ish perpendicular — good enough for thin props).
+function drawThickLine(p0,p1,thickness,mvp,col){
+  var dx=p1[0]-p0[0],dy=p1[1]-p0[1],dz=p1[2]-p0[2];
+  var len=Math.sqrt(dx*dx+dy*dy+dz*dz);
+  if(len<0.0001)return;
+  var ax=dx/len,ay=dy/len,az=dz/len; // long axis (tangent)
+  // pick a perpendicular "up-ish" vector not parallel to the axis
+  var refx=0,refy=1,refz=0;
+  if(Math.abs(ay)>0.95){refx=1;refy=0;refz=0;}
+  var bx=ay*refz-az*refy, by=az*refx-ax*refz, bz=ax*refy-ay*refx;
+  var blen=Math.sqrt(bx*bx+by*by+bz*bz)||1; bx/=blen;by/=blen;bz/=blen;
+  var cx=(p0[0]+p1[0])/2, cy=(p0[1]+p1[1])/2, cz=(p0[2]+p1[2])/2;
+  drawRect(cx,cy,cz, len/2, thickness, ax,ay,az, bx,by,bz, 0,0,0, mvp, col);
+}
+// Shared radius mapping for "paint amount": small=subtle, large=clearly bigger.
+// Used both for the charging blob at the string hand and the flying projectile.
+function chargeBlobRadius(stage){
+  var R=[0.010,0.018,0.028,0.040]; // metres, stage 0..3
+  return R[Math.max(0,Math.min(3,stage))];
+}
+
+// ── Bow label texture (engraved text along the bow stave) ──
+// Separate shader with UV support for the text quad
+var labelProg=(function(){
+  var VS2='attribute vec3 a;attribute vec2 uv;uniform mat4 M;varying vec2 vUV;void main(){gl_Position=M*vec4(a,1.);vUV=uv;}';
+  var FS2='precision mediump float;uniform sampler2D T;varying vec2 vUV;void main(){gl_FragColor=texture2D(T,vUV);}';
+  function sh(type,src){var s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
+  var p=gl.createProgram();
+  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS2));
+  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS2));
+  gl.linkProgram(p);
+  return p;
+})();
+var lM=gl.getUniformLocation(labelProg,'M');
+var lT=gl.getUniformLocation(labelProg,'T');
+var lA=gl.getAttribLocation(labelProg,'a');
+var lUV=gl.getAttribLocation(labelProg,'uv');
+
+// Build text texture using Canvas 2D — printed along the bow stave
+var labelTex=(function(){
+  var c=document.createElement('canvas');
+  c.width=128; c.height=512; // tall, narrow: text runs along the bow's long axis
+  var ctx=c.getContext('2d');
+  ctx.clearRect(0,0,128,512);
+  ctx.save();
+  ctx.translate(64,256);
+  ctx.rotate(-Math.PI/2); // write horizontally, then rotate so it reads along the vertical bow
+  ctx.textAlign='center';
+  ctx.textBaseline='middle';
+  ctx.fillStyle='rgba(245,238,222,0.92)';
+  ctx.font='bold 30px Georgia, "Times New Roman", serif';
+  ctx.fillText('VR-ARCHERY-PAINTER',0,-10);
+  ctx.font='17px Georgia, "Times New Roman", serif';
+  ctx.fillText('by F. Stampa 2026',0,18);
+  ctx.restore();
+  var tex=gl.createTexture();
+  gl.bindTexture(gl.TEXTURE_2D,tex);
+  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
+  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
+  return tex;
+})();
+
+function drawLabel(cx,cy,cz, Nx,Ny,Nz, Tx,Ty,Tz, Bx,By,Bz, ox,oy,oz, hw,hh, mvp){
+  var x=cx+ox, y=cy+oy, z=cz+oz;
+  // 4 corners with UV
+  var p0=[x-Tx*hw-Bx*hh, y-Ty*hw-By*hh, z-Tz*hw-Bz*hh];
+  var p1=[x+Tx*hw-Bx*hh, y+Ty*hw-By*hh, z+Tz*hw-Bz*hh];
+  var p2=[x+Tx*hw+Bx*hh, y+Ty*hw+By*hh, z+Tz*hw+Bz*hh];
+  var p3=[x-Tx*hw+Bx*hh, y-Ty*hw+By*hh, z-Tz*hw+Bz*hh];
+  // interleaved: x,y,z,u,v per vertex — but WebGL1 needs separate buffers
+  var pos=[p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
+           p0[0],p0[1],p0[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2]];
+  var uvs=[0,1, 1,1, 1,0,  0,1, 1,0, 0,0];
+  var pb=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(pos),gl.DYNAMIC_DRAW);
+  var ub=gl.createBuffer();
+  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
+  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(uvs),gl.DYNAMIC_DRAW);
+
+  gl.useProgram(labelProg);
+  gl.uniformMatrix4fv(lM,false,mvp);
+  gl.activeTexture(gl.TEXTURE0);
+  gl.bindTexture(gl.TEXTURE_2D,labelTex);
+  gl.uniform1i(lT,0);
+  gl.enable(gl.BLEND);
+  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
+  gl.enableVertexAttribArray(lA);
+  gl.vertexAttribPointer(lA,3,gl.FLOAT,false,0,0);
+
+  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
+  gl.enableVertexAttribArray(lUV);
+  gl.vertexAttribPointer(lUV,2,gl.FLOAT,false,0,0);
+
+  gl.drawArrays(gl.TRIANGLES,0,6);
+
+  gl.disableVertexAttribArray(lUV);
+  gl.deleteBuffer(pb); gl.deleteBuffer(ub);
+  gl.useProgram(prog); // restore main shader
+}
+
+// ── Misc helpers ──────────────────────────────────────────
+function localToWorld(mat,lx,ly,lz){
+  return[mat[12]+mat[0]*lx+mat[4]*ly+mat[8]*lz,
+         mat[13]+mat[1]*lx+mat[5]*ly+mat[9]*lz,
+         mat[14]+mat[2]*lx+mat[6]*ly+mat[10]*lz];
+}
+
+// ── VR state ─────────────────────────────────────────────
+var xrSession=null,xrRefSpace=null;
+var trigR=false,wasA=false,wasB=false;
+var leftMat=null,rightMat=null;
+var lastFrameT=null;
+var stickArmedX=0,stickArmedY=0; // joystick "switch" arming state for colour / tip-size selection
+
+function tipPos(m){return[m[12]-m[8]*0.07,m[13]-m[9]*0.07,m[14]-m[10]*0.07];}
+
+function onFrame(t,frame){
+  xrSession.requestAnimationFrame(onFrame);
+  var pose=frame.getViewerPose(xrRefSpace);
+  if(!pose)return;
+
+  var tSec=t/1000;
+  var dt=lastFrameT===null?0:Math.min(0.05,tSec-lastFrameT);
+  lastFrameT=tSec;
+
+  // Collect matrices
+  leftMat=null; rightMat=null;
+  for(var i=0;i<xrSession.inputSources.length;i++){
+    var src=xrSession.inputSources[i];
+    var gp=src.gripSpace?frame.getPose(src.gripSpace,xrRefSpace):null;
+    if(!gp)continue;
+    if(src.handedness==='right')rightMat=gp.transform.matrix;
+    if(src.handedness==='left') leftMat =gp.transform.matrix;
+  }
+
+  // Handle input
+  for(var i=0;i<xrSession.inputSources.length;i++){
+    var src=xrSession.inputSources[i];
+    var gp2=src.gamepad; if(!gp2)continue;
+
+    if(src.handedness==='right'&&rightMat){
+      var trig=gp2.buttons[0]?gp2.buttons[0].pressed:false;
+      if(trig&&!trigR){ trigR=true; startDraw(); }
+      if(!trig&&trigR){
+        trigR=false;
+        if(leftMat){
+          var lp=[leftMat[12],leftMat[13],leftMat[14]];
+          var rp=[rightMat[12],rightMat[13],rightMat[14]];
+          releaseDraw(lp,rp);
+        }else{
+          bowState=null;
+        }
+      }
+
+      var aNow=gp2.buttons[4]?gp2.buttons[4].pressed:false;
+      var bNow=gp2.buttons[5]?gp2.buttons[5].pressed:false;
+      if(aNow&&!wasA)undoStroke(); if(bNow&&!wasB)clearAll();
+      wasA=aNow; wasB=bNow;
+    }
+    if(src.handedness==='left'&&gp2){
+      // Joystick acts like a spring-loaded switch: deflect past the threshold in a direction,
+      // then return to centre, to step the selection by one. Prevents accidental rapid cycling.
+      var jx=gp2.axes[2]||0, jy=gp2.axes[3]||0;
+      var STICK_T=0.55, STICK_RESET=0.25;
+      if(!stickArmedX && jx> STICK_T){ colorIdx=(colorIdx+1)%8; stickArmedX= 1; }
+      if(!stickArmedX && jx<-STICK_T){ colorIdx=(colorIdx+7)%8; stickArmedX=-1; }
+      if(stickArmedX && Math.abs(jx)<STICK_RESET) stickArmedX=0;
+
+      if(!stickArmedY && jy<-STICK_T){ widthIdx=Math.min(3,widthIdx+1); stickArmedY=-1; } // stick up (negative jy) = bigger tip
+      if(!stickArmedY && jy> STICK_T){ widthIdx=Math.max(0,widthIdx-1); stickArmedY= 1; } // stick down = smaller tip
+      if(stickArmedY && Math.abs(jy)<STICK_RESET) stickArmedY=0;
+    }
+  }
+
+  // Physics step (once per frame, independent of view count)
+  if(dt>0){ updateProjectiles(dt,tSec); updateDrips(dt); }
+
+  // Render
+  var layer=xrSession.renderState.baseLayer;
+  gl.bindFramebuffer(gl.FRAMEBUFFER,layer.framebuffer);
+  gl.clearColor(0.55,0.72,0.88,1); // sky fallback colour, matches sky geometry
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+
+  for(var vi=0;vi<pose.views.length;vi++){
+    var view=pose.views[vi];
+    var vp=layer.getViewport(view);
+    gl.viewport(vp.x,vp.y,vp.width,vp.height);
+    var vm=m4(); inv(vm,view.transform.matrix);
+    var mvp=m4(); mul(mvp,view.projectionMatrix,vm);
+
+    drawRoom(mvp);
+    drawSplatters(mvp);
+    drawProjectiles(mvp);
+    drawBow(leftMat,rightMat,mvp);
+  }
+}
+
+// ── Enter VR ─────────────────────────────────────────────
+function enterVR(){
+  navigator.xr.requestSession('immersive-vr',{optionalFeatures:['local-floor','bounded-floor']})
+  .then(function(session){
+    xrSession=session;
+    session.updateRenderState({baseLayer:new XRWebGLLayer(session,gl)});
+    session.requestReferenceSpace('local-floor')
+    .catch(function(){return session.requestReferenceSpace('local');})
+    .then(function(rs){
+      xrRefSpace=rs;
+      document.getElementById('overlay').style.display='none';
+      session.requestAnimationFrame(onFrame);
+    });
+  }).catch(function(e){
+    document.getElementById('status').textContent='Fehler: '+e.message;
+  });
+}
+
+// ── WebXR check ──────────────────────────────────────────
+var btn=document.getElementById('btn');
+var statusEl=document.getElementById('status');
+if(navigator.xr){
+  navigator.xr.isSessionSupported('immersive-vr').then(function(ok){
+    if(ok){
+      statusEl.textContent='✓ Quest erkannt';
+      btn.disabled=false; btn.addEventListener('click',enterVR);
+    }else{
+      statusEl.textContent='Kein Headset — Desktop';
+      btn.textContent='Desktop-Modus'; btn.disabled=false;
+      btn.addEventListener('click',startDesktop);
+    }
+  });
+}else{
+  statusEl.textContent='WebXR nicht verfügbar';
+  btn.textContent='Desktop-Modus'; btn.disabled=false;
+  btn.addEventListener('click',startDesktop);
+}
+
+// ── Desktop mode ─────────────────────────────────────────
+var dcam={az:0,el:0.3,dist:2.5,tgt:[0,1.2,0]};
+function dcamMatrix(){
+  var sa=Math.sin(dcam.az),ca=Math.cos(dcam.az);
+  var se=Math.sin(dcam.el),ce=Math.cos(dcam.el);
+  var ex=dcam.tgt[0]+dcam.dist*ca*ce,ey=dcam.tgt[1]+dcam.dist*se,ez=dcam.tgt[2]+dcam.dist*sa*ce;
+  var fx=dcam.tgt[0]-ex,fy=dcam.tgt[1]-ey,fz=dcam.tgt[2]-ez;
+  var fl=Math.sqrt(fx*fx+fy*fy+fz*fz); fx/=fl;fy/=fl;fz/=fl;
+  var rx=fy*0-fz*1,ry=fz*0-fx*0,rz=fx*1-fy*0;
+  var rl=Math.sqrt(rx*rx+ry*ry+rz*rz); rx/=rl;ry/=rl;rz/=rl;
+  var ux=ry*fz-rz*fy,uy=rz*fx-rx*fz,uz=rx*fy-ry*fx;
+  var vm=m4();
+  vm[0]=rx;vm[1]=ux;vm[2]=-fx;vm[3]=0;
+  vm[4]=ry;vm[5]=uy;vm[6]=-fy;vm[7]=0;
+  vm[8]=rz;vm[9]=uz;vm[10]=-fz;vm[11]=0;
+  vm[12]=-(rx*ex+ry*ey+rz*ez);vm[13]=-(ux*ex+uy*ey+uz*ez);
+  vm[14]=(fx*ex+fy*ey+fz*ez);vm[15]=1;
+  return{vm:vm,eye:[ex,ey,ez]};
+}
+function makeProjMat(){
+  var f=70*Math.PI/180,asp=cv.width/cv.height,n=0.01,far=80,t=Math.tan(f/2),pm=m4();
+  pm[0]=1/(asp*t);pm[5]=1/t;pm[10]=(far+n)/(n-far);pm[11]=-1;pm[14]=2*far*n/(n-far);pm[15]=0;
+  return pm;
+}
+
+function startDesktop(){
+  document.getElementById('overlay').style.display='none';
+  document.getElementById('hint').classList.add('show');
+  document.getElementById('hint').textContent='Desktop-Vorschau ist für den Bogen-Modus noch nicht verfügbar — bitte mit einem VR-Headset öffnen.';
+  cv.width=window.innerWidth; cv.height=window.innerHeight;
+  gl.viewport(0,0,cv.width,cv.height);
+  gl.clearColor(0.55,0.72,0.88,1);
+  gl.clear(gl.COLOR_BUFFER_BIT|gl.DEPTH_BUFFER_BIT);
+  var cam=dcamMatrix();
+  var mvp=m4(); mul(mvp,makeProjMat(),cam.vm);
+  drawRoom(mvp);
+}
+
+window.addEventListener('resize',function(){
+  cv.width=window.innerWidth; cv.height=window.innerHeight;
+  gl.viewport(0,0,cv.width,cv.height);
+});
+</script>
+</body>
+</html>
