@@ -28,6 +28,7 @@ b{color:rgba(255,255,255,.8);}
 #btn:hover{background:rgba(255,255,255,.1);}
 #btn:disabled{opacity:.35;cursor:not-allowed;}
 #status{color:rgba(255,255,255,.3);font-size:11px;letter-spacing:.13em;text-transform:uppercase;}
+.copyright{color:rgba(255,255,255,.25);font-size:11px;letter-spacing:.05em;max-width:none;margin-top:4px;}
 #hint{
   position:fixed;bottom:16px;left:50%;transform:translateX(-50%);
   color:rgba(255,255,255,.35);font-size:11px;letter-spacing:.1em;
@@ -44,18 +45,20 @@ b{color:rgba(255,255,255,.8);}
 <body>
 <canvas id="c"></canvas>
 <div id="overlay">
-  <h1>VR-ARCHERY-PAINTER v6.0</h1>
+  <h1>VR-ARCHERY-PAINTER</h1>
   <p>
     <b>Linker Controller (Bogen)</b><br>
-    Joystick links/rechts = Farbe wählen (8 Farben)<br>
-    Joystick hoch/runter = Pfeilspitzengröße<br><br>
+    Bogen wird automatisch gehalten<br><br>
     <b>Rechter Controller (Sehne)</b><br>
     Trigger halten = Sehne greifen, Hand zurückziehen = spannen<br>
     Trigger loslassen = Schuss<br>
+    Joystick links/rechts = Farbe wählen (8 Farben)<br>
+    Joystick hoch/runter = Pfeilspitzengröße<br>
     A = Undo &nbsp;·&nbsp; B = Alles löschen
   </p>
   <button id="btn" disabled>Enter VR</button>
   <span id="status">Prüfe WebXR…</span>
+  <p class="copyright">VR-ARCHERY-PAINTER by F. Stampa 2026</p>
 </div>
 <div id="hint">VR-Headset erforderlich für die Bogen-Steuerung</div>
 <div id="errbox"></div>
@@ -292,8 +295,10 @@ function skyGeo(){
   return upload(v);
 }
 function horizonGeo(){
-  // Thin bright band right at the ground/sky seam, all the way around, to sell a horizon line
-  var v=[],D=SKY_DIST,h0=0.0,h1=1.4;
+  // Thin bright band right at the ground/sky seam, all the way around, to sell a horizon line.
+  // Drawn at a slightly SMALLER radius than the sky backdrop so it never shares an exact plane
+  // with the sky quads — avoids z-fighting between the two surfaces.
+  var v=[],D=SKY_DIST-0.5,h0=0.0,h1=1.4;
   function quad(p0,p1,p2,p3){
     v.push(p0[0],p0[1],p0[2],p1[0],p1[1],p1[2],p2[0],p2[1],p2[2],
            p0[0],p0[1],p0[2],p2[0],p2[1],p2[2],p3[0],p3[1],p3[2]);
@@ -597,33 +602,55 @@ function drawProjectiles(mvp){
 }
 // ── Bow visuals: bow body at the left hand, string from the bow tips to the right (draw) hand,
 // and the paint blob sitting at the string hand (= the arrow's tip) while drawn. ──
-var BOW_HALF_LEN=0.30; // metres, half the bow's height when seen from the front
+var BOW_HALF_LEN=0.30;   // metres, half the bow's height when seen from the front
+var BOW_BOW_OUT=0.045;   // metres, how far the stave bows outward (away from the string) at its middle
+var BOW_SEGMENTS=10;     // straight segments used to approximate the curve per half
+
+// Point along the bow's curved stave: t in [-1,1], 0=grip centre, ±1=tips.
+// The curve bows outward (away from the archer, along the controller's local -Z "front") —
+// flat near the grip, increasingly curved toward the tips, like a classic recurve bow.
+// It also leans gently sideways (monotonic, no wiggle) for a less flat, more 3-dimensional silhouette.
+function bowCurvePoint(t, bowPos, ux,uy,uz, fx,fy,fz, sx,sy,sz){
+  var along = t*BOW_HALF_LEN;
+  var outAmt = BOW_BOW_OUT*Math.sin(Math.abs(t)*Math.PI*0.5); // 0 at grip, max at tips, same sign both sides
+  var sideAmt = BOW_BOW_OUT*0.3*t; // gentle monotonic lean, opposite direction on each half
+  return [
+    bowPos[0]+ux*along+fx*outAmt+sx*sideAmt,
+    bowPos[1]+uy*along+fy*outAmt+sy*sideAmt,
+    bowPos[2]+uz*along+fz*outAmt+sz*sideAmt
+  ];
+}
 
 function drawBow(leftMat,rightMat,mvp){
   if(!leftMat)return;
   var bowPos=[leftMat[12],leftMat[13],leftMat[14]];
-  // Bow's own "up" axis (along the controller's local Y) so it visually follows hand rotation
-  var ux=leftMat[4],uy=leftMat[5],uz=leftMat[6];
+  // Bow's own axes, taken straight from the controller orientation:
+  var ux=leftMat[4],uy=leftMat[5],uz=leftMat[6];     // "up" = along the stave
   var ulen=Math.sqrt(ux*ux+uy*uy+uz*uz)||1; ux/=ulen;uy/=ulen;uz/=ulen;
-  var tipA=[bowPos[0]+ux*BOW_HALF_LEN, bowPos[1]+uy*BOW_HALF_LEN, bowPos[2]+uz*BOW_HALF_LEN];
-  var tipB=[bowPos[0]-ux*BOW_HALF_LEN, bowPos[1]-uy*BOW_HALF_LEN, bowPos[2]-uz*BOW_HALF_LEN];
+  var fx=-leftMat[8],fy=-leftMat[9],fz=-leftMat[10]; // "forward/outward" = away from the palm
+  var flen=Math.sqrt(fx*fx+fy*fy+fz*fz)||1; fx/=flen;fy/=flen;fz/=flen;
+  // Sideways axis = up × forward, completes a right-handed frame for the gentle S-bend
+  var sx=uy*fz-uz*fy, sy=uz*fx-ux*fz, sz=ux*fy-uy*fx;
+  var slen=Math.sqrt(sx*sx+sy*sy+sz*sz)||1; sx/=slen;sy/=slen;sz/=slen;
 
-  // Bow stave: slightly curved look approximated with 3 straight thin segments
+  var tipA=bowCurvePoint( 1, bowPos, ux,uy,uz, fx,fy,fz, sx,sy,sz);
+  var tipB=bowCurvePoint(-1, bowPos, ux,uy,uz, fx,fy,fz, sx,sy,sz);
+
+  // Bow stave: a real curved silhouette, drawn as a chain of short straight segments
   var bowCol=[0.32,0.21,0.12];
-  drawThickLine(tipA,bowPos,0.012,mvp,bowCol);
-  drawThickLine(bowPos,tipB,0.012,mvp,bowCol);
-
-  // Engraved label along the lower half of the stave, facing outward (away from the player's body)
-  if(labelTex){
-    // Outward-facing normal: controller's local -Z (away from the palm), a reasonable "front" of the bow
-    var fx=-leftMat[8],fy=-leftMat[9],fz=-leftMat[10];
-    var flen=Math.sqrt(fx*fx+fy*fy+fz*fz)||1; fx/=flen;fy/=flen;fz/=flen;
-    // Bitangent = Normal × Tangent, so the label quad isn't degenerate
-    var bxL=fy*uz-fz*uy, byL=fz*ux-fx*uz, bzL=fx*uy-fy*ux;
-    var blenL=Math.sqrt(bxL*bxL+byL*byL+bzL*bzL)||1; bxL/=blenL;byL/=blenL;bzL/=blenL;
-    var midx=(bowPos[0]+tipB[0])/2, midy=(bowPos[1]+tipB[1])/2, midz=(bowPos[2]+tipB[2])/2;
-    var labelHalfLen=BOW_HALF_LEN*0.85, labelHalfWidth=0.018;
-    drawLabel(midx,midy,midz, fx,fy,fz, ux,uy,uz, bxL,byL,bzL, fx*0.013,fy*0.013,fz*0.013, labelHalfLen,labelHalfWidth, mvp);
+  var prev=bowPos;
+  for(var s=1;s<=BOW_SEGMENTS;s++){
+    var t=s/BOW_SEGMENTS; // 0..1 → upper half
+    var p=bowCurvePoint(t, bowPos, ux,uy,uz, fx,fy,fz, sx,sy,sz);
+    drawThickLine(prev,p,0.011,mvp,bowCol);
+    prev=p;
+  }
+  prev=bowPos;
+  for(var s=1;s<=BOW_SEGMENTS;s++){
+    var t=-s/BOW_SEGMENTS; // 0..-1 → lower half
+    var p=bowCurvePoint(t, bowPos, ux,uy,uz, fx,fy,fz, sx,sy,sz);
+    drawThickLine(prev,p,0.011,mvp,bowCol);
+    prev=p;
   }
 
   if(!rightMat)return;
@@ -636,7 +663,6 @@ function drawBow(leftMat,rightMat,mvp){
   drawThickLine(tipB,restPoint,0.003,mvp,stringCol);
 
   if(bowState){
-    var d=computeDraw(bowPos,stringPos);
     var stage=widthIdx;
     var r=chargeBlobRadius(stage);
     // The paint blob (= arrow tip / nock point) sits at the string hand while drawing
@@ -663,91 +689,6 @@ function drawThickLine(p0,p1,thickness,mvp,col){
 function chargeBlobRadius(stage){
   var R=[0.010,0.018,0.028,0.040]; // metres, stage 0..3
   return R[Math.max(0,Math.min(3,stage))];
-}
-
-// ── Bow label texture (engraved text along the bow stave) ──
-// Separate shader with UV support for the text quad
-var labelProg=(function(){
-  var VS2='attribute vec3 a;attribute vec2 uv;uniform mat4 M;varying vec2 vUV;void main(){gl_Position=M*vec4(a,1.);vUV=uv;}';
-  var FS2='precision mediump float;uniform sampler2D T;varying vec2 vUV;void main(){gl_FragColor=texture2D(T,vUV);}';
-  function sh(type,src){var s=gl.createShader(type);gl.shaderSource(s,src);gl.compileShader(s);return s;}
-  var p=gl.createProgram();
-  gl.attachShader(p,sh(gl.VERTEX_SHADER,VS2));
-  gl.attachShader(p,sh(gl.FRAGMENT_SHADER,FS2));
-  gl.linkProgram(p);
-  return p;
-})();
-var lM=gl.getUniformLocation(labelProg,'M');
-var lT=gl.getUniformLocation(labelProg,'T');
-var lA=gl.getAttribLocation(labelProg,'a');
-var lUV=gl.getAttribLocation(labelProg,'uv');
-
-// Build text texture using Canvas 2D — printed along the bow stave
-var labelTex=(function(){
-  var c=document.createElement('canvas');
-  c.width=128; c.height=512; // tall, narrow: text runs along the bow's long axis
-  var ctx=c.getContext('2d');
-  ctx.clearRect(0,0,128,512);
-  ctx.save();
-  ctx.translate(64,256);
-  ctx.rotate(-Math.PI/2); // write horizontally, then rotate so it reads along the vertical bow
-  ctx.textAlign='center';
-  ctx.textBaseline='middle';
-  ctx.fillStyle='rgba(245,238,222,0.92)';
-  ctx.font='bold 30px Georgia, "Times New Roman", serif';
-  ctx.fillText('VR-ARCHERY-PAINTER',0,-10);
-  ctx.font='17px Georgia, "Times New Roman", serif';
-  ctx.fillText('by F. Stampa 2026',0,18);
-  ctx.restore();
-  var tex=gl.createTexture();
-  gl.bindTexture(gl.TEXTURE_2D,tex);
-  gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,c);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MIN_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_MAG_FILTER,gl.LINEAR);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_S,gl.CLAMP_TO_EDGE);
-  gl.texParameteri(gl.TEXTURE_2D,gl.TEXTURE_WRAP_T,gl.CLAMP_TO_EDGE);
-  return tex;
-})();
-
-function drawLabel(cx,cy,cz, Nx,Ny,Nz, Tx,Ty,Tz, Bx,By,Bz, ox,oy,oz, hw,hh, mvp){
-  var x=cx+ox, y=cy+oy, z=cz+oz;
-  // 4 corners with UV
-  var p0=[x-Tx*hw-Bx*hh, y-Ty*hw-By*hh, z-Tz*hw-Bz*hh];
-  var p1=[x+Tx*hw-Bx*hh, y+Ty*hw-By*hh, z+Tz*hw-Bz*hh];
-  var p2=[x+Tx*hw+Bx*hh, y+Ty*hw+By*hh, z+Tz*hw+Bz*hh];
-  var p3=[x-Tx*hw+Bx*hh, y-Ty*hw+By*hh, z-Tz*hw+Bz*hh];
-  // interleaved: x,y,z,u,v per vertex — but WebGL1 needs separate buffers
-  var pos=[p0[0],p0[1],p0[2], p1[0],p1[1],p1[2], p2[0],p2[1],p2[2],
-           p0[0],p0[1],p0[2], p2[0],p2[1],p2[2], p3[0],p3[1],p3[2]];
-  var uvs=[0,1, 1,1, 1,0,  0,1, 1,0, 0,0];
-  var pb=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
-  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(pos),gl.DYNAMIC_DRAW);
-  var ub=gl.createBuffer();
-  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
-  gl.bufferData(gl.ARRAY_BUFFER,new Float32Array(uvs),gl.DYNAMIC_DRAW);
-
-  gl.useProgram(labelProg);
-  gl.uniformMatrix4fv(lM,false,mvp);
-  gl.activeTexture(gl.TEXTURE0);
-  gl.bindTexture(gl.TEXTURE_2D,labelTex);
-  gl.uniform1i(lT,0);
-  gl.enable(gl.BLEND);
-  gl.blendFunc(gl.SRC_ALPHA,gl.ONE_MINUS_SRC_ALPHA);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER,pb);
-  gl.enableVertexAttribArray(lA);
-  gl.vertexAttribPointer(lA,3,gl.FLOAT,false,0,0);
-
-  gl.bindBuffer(gl.ARRAY_BUFFER,ub);
-  gl.enableVertexAttribArray(lUV);
-  gl.vertexAttribPointer(lUV,2,gl.FLOAT,false,0,0);
-
-  gl.drawArrays(gl.TRIANGLES,0,6);
-
-  gl.disableVertexAttribArray(lUV);
-  gl.deleteBuffer(pb); gl.deleteBuffer(ub);
-  gl.useProgram(prog); // restore main shader
 }
 
 // ── Misc helpers ──────────────────────────────────────────
@@ -808,8 +749,7 @@ function onFrame(t,frame){
       var bNow=gp2.buttons[5]?gp2.buttons[5].pressed:false;
       if(aNow&&!wasA)undoStroke(); if(bNow&&!wasB)clearAll();
       wasA=aNow; wasB=bNow;
-    }
-    if(src.handedness==='left'&&gp2){
+
       // Joystick acts like a spring-loaded switch: deflect past the threshold in a direction,
       // then return to centre, to step the selection by one. Prevents accidental rapid cycling.
       var jx=gp2.axes[2]||0, jy=gp2.axes[3]||0;
