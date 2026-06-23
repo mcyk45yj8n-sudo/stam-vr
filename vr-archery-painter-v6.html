@@ -624,19 +624,19 @@ var BOW_TIP_A_LOCAL=[0.083, 0.0, 0.338];
 var BOW_TIP_B_LOCAL=[0.068, 0.0, -0.335];
 
 function bowModelMatrix(leftMat){
-  // The bow's long axis must run vertically in the hand (tip up, tip down) when the controller
-  // is held in a natural bow-grip pose. Through testing, the controller's local -Z axis (its
-  // "forward" direction) is the one that points vertically along the stave in that grip — not Y.
+  // The bow's long axis runs vertically in the hand: controller local -Z maps to the mesh's Z.
   var ax=-leftMat[8],ay=-leftMat[9],az=-leftMat[10]; // controller "forward" → mesh's long (Z) axis
   var alen=Math.sqrt(ax*ax+ay*ay+az*az)||1; ax/=alen;ay/=alen;az/=alen;
-  var rx=leftMat[4],ry=leftMat[5],rz=leftMat[6];     // controller "up" → mesh Y (bow's outward bow)
+  var rx=leftMat[4],ry=leftMat[5],rz=leftMat[6];     // controller "up"
   var rlen=Math.sqrt(rx*rx+ry*ry+rz*rz)||1; rx/=rlen;ry/=rlen;rz/=rlen;
   // mesh X axis = mesh Y × mesh Z, completes a right-handed orthonormal frame.
   var uxv=ry*az-rz*ay, uyv=rz*ax-rx*az, uzv=rx*ay-ry*ax;
+  // Bow was a mirrored "C" (string on the wrong side) — rotate -90° around the long (Z) axis:
+  // new X column = old Y column, new Y column = -(old X column).
   var M=m4();
-  M[0]=uxv;M[1]=uyv;M[2]=uzv;M[3]=0;     // mesh local X column
-  M[4]=rx; M[5]=ry; M[6]=rz; M[7]=0;     // mesh local Y column
-  M[8]=ax; M[9]=ay; M[10]=az;M[11]=0;    // mesh local Z column (= long axis)
+  M[0]=rx;  M[1]=ry;  M[2]=rz;  M[3]=0;     // mesh local X column (= old Y)
+  M[4]=-uxv;M[5]=-uyv;M[6]=-uzv;M[7]=0;     // mesh local Y column (= -old X)
+  M[8]=ax; M[9]=ay; M[10]=az;M[11]=0;       // mesh local Z column (= long axis, unchanged)
   M[12]=leftMat[12]; M[13]=leftMat[13]; M[14]=leftMat[14]; M[15]=1;
   return M;
 }
