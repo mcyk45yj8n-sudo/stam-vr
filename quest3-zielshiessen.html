@@ -430,27 +430,93 @@ function shoot(origin, direction) {
   G.ufos.forEach(u => u.group.traverse(c => { if (c.isMesh) targets.push(c); }));
 
   const hits = raycaster.intersectObjects(targets, false);
+
+  let targetUfo = null;
+  let targetIdx = -1;
+  let hitPoint = null;
+
   if (hits.length > 0) {
-    // find which UFO was hit
     const hitMesh = hits[0].object;
-    const idx = G.ufos.findIndex(u => {
+    targetIdx = G.ufos.findIndex(u => {
       let found = false;
       u.group.traverse(c => { if (c === hitMesh) found = true; });
       return found;
     });
-    if (idx !== -1) {
-      const u = G.ufos[idx];
-      burst(u.group.position.clone(), 0x00ffcc);
-      scene.remove(u.group);
-      G.ufos.splice(idx, 1);
-      G.combo++;
-      G.score += 100 * Math.min(G.combo, 5);
-      updateSprite(hudScore, `SCORE: ${G.score}`);
-      updateSprite(hudCombo, G.combo > 1 ? `COMBO ×${Math.min(G.combo,5)}` : '');
+    if (targetIdx !== -1) {
+      targetUfo = G.ufos[targetIdx];
+      hitPoint = hits[0].point.clone();
     }
-  } else {
+  }
+
+  spawnProjectile(origin.clone(), direction.clone(), targetUfo, hitPoint);
+
+  if (!targetUfo) {
     G.combo = 0;
     updateSprite(hudCombo, '');
+  }
+}
+
+// ── PROJEKTIL (Photonentorpedo) ────────────────────────────────────────────────
+function spawnProjectile(origin, direction, targetUfo, hitPoint) {
+  const projGroup = new THREE.Group();
+
+  // Leuchtender Kern
+  const core = new THREE.Mesh(
+    new THREE.SphereGeometry(0.035, 8, 8),
+    new THREE.MeshBasicMaterial({ color: 0x00ffaa })
+  );
+  projGroup.add(core);
+
+  // Glow-Licht
+  const glow = new THREE.PointLight(0x00ffaa, 3, 4);
+  projGroup.add(glow);
+
+  // Leuchtspur (kleiner Kegel hinter dem Kern)
+  const trail = new THREE.Mesh(
+    new THREE.ConeGeometry(0.025, 0.18, 8),
+    new THREE.MeshBasicMaterial({ color: 0x00ffaa, transparent: true, opacity: 0.6 })
+  );
+  trail.rotation.x = Math.PI / 2;
+  trail.position.z = 0.11;
+  projGroup.add(trail);
+
+  projGroup.position.copy(origin);
+
+  const speed = 14; // Einheiten pro Sekunde
+  const dir = direction.clone().normalize();
+
+  // Ziel-Endpunkt: entweder der Treffpunkt am UFO, oder einfach weit geradeaus
+  const endPoint = hitPoint ? hitPoint.clone() : origin.clone().addScaledVector(dir, 40);
+  const totalDist = origin.distanceTo(endPoint);
+  const flightTime = Math.max(totalDist / speed, 0.05);
+
+  scene.add(projGroup);
+
+  G.bullets.push({
+    group: projGroup,
+    dir,
+    speed,
+    age: 0,
+    flightTime,
+    targetUfo,
+    targetIdx: targetUfo ? G.ufos.indexOf(targetUfo) : -1,
+    endPoint,
+    resolved: false
+  });
+}
+
+function resolveProjectileHit(proj) {
+  // UFO könnte inzwischen schon anders indiziert sein — per Referenz erneut finden
+  const idx = G.ufos.indexOf(proj.targetUfo);
+  if (idx !== -1) {
+    const u = G.ufos[idx];
+    burst(u.group.position.clone(), 0x00ffcc);
+    scene.remove(u.group);
+    G.ufos.splice(idx, 1);
+    G.combo++;
+    G.score += 100 * Math.min(G.combo, 5);
+    updateSprite(hudScore, `SCORE: ${G.score}`);
+    updateSprite(hudCombo, G.combo > 1 ? `COMBO ×${Math.min(G.combo,5)}` : '');
   }
 }
 
@@ -483,6 +549,7 @@ function setupControllers() {
     // Grip visual — Interceptor-Modell als Pistole, Spitze zeigt nach vorne (-Z)
     if (interceptorTemplate) {
       const gun = interceptorTemplate.clone(true);
+      gun.rotation.y = Math.PI; // 180° gedreht — zeigte vorher zum Spieler
       // Modell wurde beim Laden auf den Ursprung zentriert; falls die Spitze
       // nicht von Natur aus auf -Z zeigt, kann hier eine Korrekturrotation
       // ergänzt werden, z.B.: gun.rotation.y = Math.PI / 2;
@@ -587,6 +654,30 @@ renderer.setAnimationLoop(() => {
     p.material.transparent = true;
     if (p._isRing) p.scale.setScalar(1 + prog * 4);
     if (p._age >= p._life) { scene.remove(p); G.particles.splice(i, 1); }
+  }
+
+  // ── Projektile (Photonentorpedos) ──
+  for (let i = G.bullets.length - 1; i >= 0; i--) {
+    const proj = G.bullets[i];
+    proj.age += dt;
+    proj.group.position.addScaledVector(proj.dir, proj.speed * dt);
+    proj.group.lookAt(proj.group.position.clone().add(proj.dir));
+
+    // Leichtes Pulsieren des Leuchtkerns
+    const pulse = 1 + Math.sin(t * 20) * 0.15;
+    proj.group.children[0].scale.setScalar(pulse);
+
+    const arrived = proj.age >= proj.flightTime;
+    const outOfRange = proj.group.position.distanceTo(proj.endPoint) < 0.15;
+
+    if (arrived || outOfRange) {
+      if (proj.targetUfo && !proj.resolved) {
+        proj.resolved = true;
+        resolveProjectileHit(proj);
+      }
+      scene.remove(proj.group);
+      G.bullets.splice(i, 1);
+    }
   }
 
   renderer.render(scene, camera);
