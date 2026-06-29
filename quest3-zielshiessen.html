@@ -124,7 +124,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x02020d);
-scene.fog = new THREE.FogExp2(0x02020d, 0.025);
+scene.fog = new THREE.FogExp2(0x02020d, 0.006);
 
 const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 300);
 camera.position.set(0, 1.6, 0);
@@ -346,7 +346,7 @@ function spawnUFO(speedMult = 1) {
 
   // Random position: spread across front hemisphere, various heights
   const angle  = (Math.random() - 0.5) * Math.PI * 1.4;
-  const dist   = 10 + Math.random() * 12;
+  const dist   = 25 + Math.random() * 30;
   const height = 1.5 + Math.random() * 4;
   group.position.set(
     Math.sin(angle) * dist,
@@ -362,7 +362,7 @@ function spawnUFO(speedMult = 1) {
     0.2 + Math.random() * 0.4          // slowly closing in
   ).normalize();
 
-  const rotSpeed = (3 + Math.random() * 4) * (Math.random() > 0.5 ? 1 : -1);
+  const rotSpeed = (6 + Math.random() * 8) * (Math.random() > 0.5 ? 1 : -1);
 
   scene.add(group);
 
@@ -531,16 +531,19 @@ function setupControllers() {
 
     ctrl.addEventListener('selectstart', () => {
       const tmp = new THREE.Matrix4().identity().extractRotation(ctrl.matrixWorld);
-      const orig = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld);
+      // Lokaler Versatz: Spitze des Interceptors liegt etwas unterhalb/vorne
+      // des Controller-Pivots (der am Cockpit/Modellmittelpunkt sitzt).
+      const muzzleOffset = new THREE.Vector3(0, -0.05, -0.12).applyMatrix4(tmp);
+      const orig = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld).add(muzzleOffset);
       const dir  = new THREE.Vector3(0, 0, -1).applyMatrix4(tmp);
       shoot(orig, dir);
     });
 
-    // Laser beam
+    // Laser beam — startet an der Mündung (gleicher Versatz wie Raycast-Ursprung)
     const laser = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, 0, 0),
-        new THREE.Vector3(0, 0, -20)
+        new THREE.Vector3(0, -0.05, -0.12),
+        new THREE.Vector3(0, -0.05, -20)
       ]),
       new THREE.LineBasicMaterial({ color: 0x00ffcc })
     );
