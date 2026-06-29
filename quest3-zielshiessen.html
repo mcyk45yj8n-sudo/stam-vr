@@ -321,12 +321,14 @@ scene.add(floor);
     { r: 1.0, g: 0.95, b: 0.9 },
   ];
 
-  // Schicht 1: extrem viele, hauchfeine, ferne Sterne (Milchstraßen-Eindruck)
-  makeStarLayer(14000, 80, 260, 0.07, 0.8, palette);
+  // Schicht 1: viele feine, ferne Sterne (Milchstraßen-Eindruck) — Anzahl
+  // reduziert und Mindestgröße erhöht, da sehr kleine Punkte bei
+  // Kopfbewegung im VR auf Sub-Pixel-Größe flimmern können.
+  makeStarLayer(4000, 80, 260, 0.11, 0.7, palette);
   // Schicht 2: mittlere Sterne, etwas heller
-  makeStarLayer(3500, 60, 220, 0.13, 0.9, palette);
-  // Schicht 3: wenige, größere "nahe" Sterne, die deutlicher leuchten — jetzt rund
-  makeStarLayer(400, 50, 180, 0.26, 1.0, palette);
+  makeStarLayer(1200, 60, 220, 0.16, 0.85, palette);
+  // Schicht 3: wenige, größere "nahe" Sterne, die deutlicher leuchten
+  makeStarLayer(180, 50, 180, 0.28, 1.0, palette);
 }
 
 // ── UFO-Leucht-Beacon (gecachte Textur, damit nicht pro UFO neu erzeugt) ──────
@@ -562,13 +564,11 @@ function spawnUFO(speedMult = 1) {
   beacon.scale.setScalar(1.4);
   group.add(beacon);
 
-  // Spawn-Position: auf maximal 200° Sichtfeld begrenzt (±100°), mit
-  // Gewichtung zur Mitte hin — die meisten UFOs erscheinen nahe der
-  // Blickachse und fliegen direkt auf den Spieler zu, statt gleichmäßig
-  // über die volle Breite verteilt zu sein.
-  const maxAngle = (100 * Math.PI) / 180; // 200° Gesamt-Sichtfeld
+  // Spawn-Position: enger Frontalkegel statt breitem Bogen — UFOs sollen
+  // klar von vorne anfliegen, nicht von der Seite erscheinen.
+  const maxAngle = (30 * Math.PI) / 180; // nur noch ±30° vor dem Spieler
   const angleSign = Math.random() > 0.5 ? 1 : -1;
-  const angleBias = Math.pow(Math.random(), 2.2); // näher an 0 = häufiger mittig
+  const angleBias = Math.pow(Math.random(), 1.6); // weiterhin Häufung Richtung Mitte
   const angle  = angleSign * angleBias * maxAngle;
   const dist   = 35 + Math.random() * 30; // weiter Anflug, aber durch Beacon durchgehend sichtbar
   const height = 1.5 + Math.random() * 4;
@@ -744,9 +744,17 @@ function spawnProjectile(origin, direction, targetUfo, hitPoint) {
   );
   projGroup.add(core);
 
-  // Glow-Licht
-  const glow = new THREE.PointLight(0x00ffaa, 3, 4);
-  projGroup.add(glow);
+  // Glow-Effekt als additiv geblendetes Sprite statt echtem PointLight.
+  // Echtzeit-Lichter sind in WebXR teuer (jedes beleuchtete Objekt in der
+  // Szene wird pro Licht neu berechnet) — bei mehreren gleichzeitigen
+  // Projektilen summiert sich das zu spürbaren Rucklern. Das Sprite sieht
+  // optisch sehr ähnlich aus, kostet aber praktisch nichts.
+  const glowSprite = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: getBeaconTexture(), color: 0x00ffaa, transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+  }));
+  glowSprite.scale.setScalar(0.22);
+  projGroup.add(glowSprite);
 
   // Leuchtspur (kleiner Kegel hinter dem Kern)
   const trail = new THREE.Mesh(
