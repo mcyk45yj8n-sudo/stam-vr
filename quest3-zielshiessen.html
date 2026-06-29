@@ -85,10 +85,18 @@
       logEl.scrollTop = logEl.scrollHeight;
     }
     window.addEventListener('error', (e) => {
-      show('[ERROR] ' + e.message + '  @ ' + (e.filename || '?') + ':' + (e.lineno || '?'));
+      let detail = '[ERROR] ' + e.message + '  @ ' + (e.filename || '?') + ':' + (e.lineno || '?');
+      if (e.error && e.error.stack) {
+        detail += '\n  STACK: ' + String(e.error.stack).slice(0, 300);
+      }
+      show(detail);
     });
     window.addEventListener('unhandledrejection', (e) => {
-      show('[PROMISE REJECTED] ' + (e.reason && e.reason.message ? e.reason.message : e.reason));
+      let detail = '[PROMISE REJECTED] ' + (e.reason && e.reason.message ? e.reason.message : e.reason);
+      if (e.reason && e.reason.stack) {
+        detail += '\n  STACK: ' + String(e.reason.stack).slice(0, 300);
+      }
+      show(detail);
     });
     show('[INFO] Fehler-Logger aktiv. UA: ' + navigator.userAgent.slice(0, 60));
   })();
@@ -924,7 +932,7 @@ function setupControllers() {
       engineGlow = new THREE.Sprite(new THREE.SpriteMaterial({
         map: getBeaconTexture(), color: 0x33aaff, transparent: true,
         depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
-        opacity: 0.85
+        opacity: 0 // unsichtbar — dient nur als Positions-Anker für den Partikel-Trail
       }));
       engineGlow.scale.setScalar(0.035);
       engineGlow.position.copy(rotatedEnginePos);
@@ -1027,9 +1035,8 @@ renderer.setAnimationLoop(() => {
       const trailData = ctrl.userData && ctrl.userData.trail;
       if (!glow || !trailData) continue;
 
-      // Sanftes Pulsieren im Ruhezustand
-      glow.scale.setScalar(0.035 + Math.sin(t * 8 + ctrl.id) * 0.008);
-
+      // glow ist unsichtbar (opacity 0) — dient nur als Positions-Anker,
+      // damit getWorldPosition() den exakten Triebwerkspunkt liefert.
       const worldPos = new THREE.Vector3();
       glow.getWorldPosition(worldPos);
 
