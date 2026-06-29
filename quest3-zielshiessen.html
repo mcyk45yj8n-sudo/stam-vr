@@ -124,7 +124,7 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x02020d);
-scene.fog = new THREE.FogExp2(0x02020d, 0.0002);
+scene.fog = new THREE.FogExp2(0x02020d, 0.0009);
 
 const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 300);
 camera.position.set(0, 1.6, 0);
@@ -329,6 +329,30 @@ scene.add(floor);
   makeStarLayer(400, 50, 180, 0.26, 1.0, palette);
 }
 
+// ── UFO-Leucht-Beacon (gecachte Textur, damit nicht pro UFO neu erzeugt) ──────
+let _beaconTexCache = null;
+function getBeaconTexture() {
+  if (_beaconTexCache) return _beaconTexCache;
+  const size = 128;
+  const c = document.createElement('canvas');
+  c.width = c.height = size;
+  const ctx = c.getContext('2d');
+  const cx = size / 2, cy = size / 2, r = size / 2;
+  const grad = ctx.createRadialGradient(cx, cy, 0, cx, cy, r);
+  grad.addColorStop(0,    'rgba(255,255,255,1)');
+  grad.addColorStop(0.15, 'rgba(255,255,255,1)');
+  grad.addColorStop(0.4,  'rgba(255,255,255,0.5)');
+  grad.addColorStop(1,    'rgba(255,255,255,0)');
+  ctx.fillStyle = grad;
+  ctx.beginPath();
+  ctx.arc(cx, cy, r, 0, Math.PI * 2);
+  ctx.fill();
+  const tex = new THREE.CanvasTexture(c);
+  tex.needsUpdate = true;
+  _beaconTexCache = tex;
+  return tex;
+}
+
 // ── SPRITE HUD ───────────────────────────────────────────────────────────────
 function makeSprite(text, color = '#00ffcc', fontSize = 64) {
   const c = document.createElement('canvas');
@@ -525,6 +549,19 @@ function spawnUFO(speedMult = 1) {
   glow.position.set(0, -0.4, 0);
   group.add(glow);
 
+  // Leucht-Beacon: ein selbstleuchtendes, additiv geblendetes Sprite, das
+  // unabhängig von Beleuchtung, Nebel oder Entfernung als heller, klar
+  // erkennbarer Punkt sichtbar bleibt — macht den Anflug aus der Ferne
+  // nachvollziehbar (PointLight allein reicht dafür nicht, da seine
+  // Reichweite nur die Umgebung beleuchtet, nicht die eigene Sichtbarkeit).
+  const beaconTex = getBeaconTexture();
+  const beacon = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: beaconTex, color: 0x66ffe0, transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false
+  }));
+  beacon.scale.setScalar(1.4);
+  group.add(beacon);
+
   // Spawn-Position: auf maximal 200° Sichtfeld begrenzt (±100°), mit
   // Gewichtung zur Mitte hin — die meisten UFOs erscheinen nahe der
   // Blickachse und fliegen direkt auf den Spieler zu, statt gleichmäßig
@@ -533,7 +570,7 @@ function spawnUFO(speedMult = 1) {
   const angleSign = Math.random() > 0.5 ? 1 : -1;
   const angleBias = Math.pow(Math.random(), 2.2); // näher an 0 = häufiger mittig
   const angle  = angleSign * angleBias * maxAngle;
-  const dist   = 45 + Math.random() * 45; // deutlich weiter weg — kein plötzliches Auftauchen mehr
+  const dist   = 35 + Math.random() * 30; // weiter Anflug, aber durch Beacon durchgehend sichtbar
   const height = 1.5 + Math.random() * 4;
   group.position.set(
     Math.sin(angle) * dist,
@@ -565,7 +602,7 @@ function spawnUFO(speedMult = 1) {
   // Kollisionsradius für präzise analytische Treffer-Berechnung (siehe shoot())
   const hitRadius = 0.47;
 
-  const ufo = { group, model, glow, speed: baseSpeed, rotSpeed, dir,
+  const ufo = { group, model, glow, beacon, speed: baseSpeed, rotSpeed, dir,
                 dodgeTimer: 0, dodgeCooldown: 1.5 + Math.random() * 2,
                 willStrafe, strafeStartDist, strafing: false,
                 strafeDir: (Math.random() > 0.5 ? 1 : -1),
@@ -952,6 +989,17 @@ renderer.setAnimationLoop(() => {
 
       // Glow pulse
       if (u.glow) u.glow.intensity = 1.5 + Math.sin(t * 4) * 0.8;
+
+      // Beacon: aus der Ferne groß & hell (gut sichtbarer Anflugpunkt),
+      // blendet aus, sobald das UFO nah genug ist, dass das Modell selbst
+      // gut erkennbar ist. Macht die komplette Flugbahn nachvollziehbar.
+      if (u.beacon) {
+        const distNow = camera.position.distanceTo(group.position);
+        const nearFade  = THREE.MathUtils.clamp((distNow - 6) / 10, 0, 1);  // ab ~16 Einheiten voll sichtbar
+        const farBoost  = THREE.MathUtils.clamp(distNow / 50, 0.4, 2.2);     // wächst mit der Distanz
+        u.beacon.material.opacity = nearFade * (0.6 + Math.sin(t * 6) * 0.25);
+        u.beacon.scale.setScalar(0.9 * farBoost);
+      }
     });
   }
 
