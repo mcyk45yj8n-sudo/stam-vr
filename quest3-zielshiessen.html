@@ -182,14 +182,16 @@ function smoothNoise2D(x, y) {
 }
 
 // Zufällige Kraterzentren mit unterschiedlichem Radius/Tiefe vorbereiten
-const craterCount = 55;
+const craterCount = 95;
 const craters = [];
 for (let i = 0; i < craterCount; i++) {
+  // Mischung aus vielen kleinen, scharfen Kratern und einigen großen, tiefen
+  const small = Math.random() < 0.65;
   craters.push({
     x: (Math.random() - 0.5) * MOON_SIZE,
     z: (Math.random() - 0.5) * MOON_SIZE,
-    r: 1.2 + Math.random() * 7,
-    depth: 0.15 + Math.random() * 0.6
+    r: small ? (0.5 + Math.random() * 2.5) : (3 + Math.random() * 9),
+    depth: small ? (0.1 + Math.random() * 0.35) : (0.4 + Math.random() * 1.0)
   });
 }
 
@@ -201,10 +203,12 @@ for (let i = 0; i < posAttr.count; i++) {
   const y = posAttr.getY(i); // lokal Y der ungerotierten Plane = spätere Welt-Z-Achse
 
   let height = 0;
-  // Sanftes Grundrelief aus überlagertem Rauschen (verschiedene Frequenzen)
-  height += (smoothNoise2D(x * 0.05, y * 0.05) - 0.5) * 0.6;
-  height += (smoothNoise2D(x * 0.15, y * 0.15) - 0.5) * 0.2;
-  height += (smoothNoise2D(x * 0.4,  y * 0.4)  - 0.5) * 0.06;
+  // Zerklüftetes Grundrelief aus überlagertem Rauschen (verschiedene Frequenzen,
+  // deutlich verstärkt für schroffere Hügel und Grate statt sanfter Wellen)
+  height += (smoothNoise2D(x * 0.05, y * 0.05) - 0.5) * 1.1;
+  height += (smoothNoise2D(x * 0.15, y * 0.15) - 0.5) * 0.45;
+  height += (smoothNoise2D(x * 0.4,  y * 0.4)  - 0.5) * 0.18;
+  height += (smoothNoise2D(x * 0.9,  y * 0.9)  - 0.5) * 0.06; // feine, scharfe Körnung
 
   // Krater-Senken mit erhöhtem Rand (realistisches Einschlagprofil)
   for (const c of craters) {
@@ -245,54 +249,6 @@ floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
 floor.castShadow = false;
 scene.add(floor);
-
-// ── Verstreute kleine Felsbrocken auf der Mondoberfläche ──
-function getMoonHeightAt(worldX, worldZ) {
-  let height = 0;
-  height += (smoothNoise2D(worldX * 0.05, worldZ * 0.05) - 0.5) * 0.6;
-  height += (smoothNoise2D(worldX * 0.15, worldZ * 0.15) - 0.5) * 0.2;
-  height += (smoothNoise2D(worldX * 0.4,  worldZ * 0.4)  - 0.5) * 0.06;
-  for (const c of craters) {
-    const dx = worldX - c.x, dz = worldZ - c.z;
-    const dist = Math.sqrt(dx * dx + dz * dz);
-    const norm = dist / c.r;
-    if (norm < 1.0) {
-      const bowl = (Math.cos(norm * Math.PI) - 1) * 0.5;
-      const rim  = norm > 0.8 ? Math.sin((norm - 0.8) / 0.2 * Math.PI) * 0.25 : 0;
-      height += (bowl + rim) * c.depth;
-    }
-  }
-  return height;
-}
-
-const rockGeoVariants = [
-  new THREE.DodecahedronGeometry(1, 0),
-  new THREE.IcosahedronGeometry(1, 0),
-];
-const rockMat = new THREE.MeshStandardMaterial({ color: 0x3a3733, roughness: 1, metalness: 0.05 });
-const rockCount = 90;
-for (let i = 0; i < rockCount; i++) {
-  const x = (Math.random() - 0.5) * MOON_SIZE * 0.9;
-  const z = (Math.random() - 0.5) * MOON_SIZE * 0.9;
-  // Spielfeld-Mitte etwas freihalten, damit Sicht auf anfliegende UFOs nicht verstellt wird
-  if (Math.abs(x) < 3 && z > -8 && z < 4) continue;
-
-  const scale = 0.08 + Math.random() * 0.45;
-  const rock = new THREE.Mesh(
-    rockGeoVariants[Math.floor(Math.random() * rockGeoVariants.length)],
-    rockMat
-  );
-  rock.scale.set(
-    scale * (0.7 + Math.random() * 0.6),
-    scale * (0.5 + Math.random() * 0.5),
-    scale * (0.7 + Math.random() * 0.6)
-  );
-  rock.position.set(x, getMoonHeightAt(x, z) + scale * 0.3, z);
-  rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
-  rock.castShadow = true;
-  rock.receiveShadow = true;
-  scene.add(rock);
-}
 
 // ── STARS ────────────────────────────────────────────────────────────────────
 // Realistischerer Weltraum: Sterne in einer vollen Kugel rund um die Szene
@@ -352,7 +308,7 @@ function makeSprite(text, color = '#00ffcc', fontSize = 64) {
     map: new THREE.CanvasTexture(c), transparent: true, depthTest: false
   }));
   spr._c = c; spr._ctx = ctx; spr._color = color; spr._fs = fontSize;
-  spr.scale.set(2.2, 0.55, 1);
+  spr.scale.set(0.34, 0.085, 1);
   updateSprite(spr, text);
   return spr;
 }
@@ -368,19 +324,54 @@ function updateSprite(spr, text) {
   spr.material.map.needsUpdate = true;
 }
 
+// ── Feste HUD-Tafel, an die Kamera angehängt (head-locked) ──────────────────
+// Bewegt sich nicht im Raum, sondern bleibt immer oben mittig im Sichtfeld,
+// unabhängig von Kopfdrehung — wie eine fixe Anzeige-Tafel.
+const hudGroup = new THREE.Group();
+hudGroup.position.set(0, 0.62, -1.3); // oben mittig, knapp im Sichtfeld-Rand
+
+// Tafel-Hintergrund (dunkles, halbtransparentes Panel)
+const hudPanel = new THREE.Mesh(
+  new THREE.PlaneGeometry(0.95, 0.26),
+  new THREE.MeshBasicMaterial({
+    color: 0x001218, transparent: true, opacity: 0.55, depthTest: false
+  })
+);
+hudPanel.renderOrder = 998;
+hudGroup.add(hudPanel);
+
+// Dünner Rahmen für den "Tafel"-Look
+const hudFrame = new THREE.Mesh(
+  new THREE.RingGeometry(0, 0, 4), // Platzhalter, durch EdgesGeometry unten ersetzt
+  new THREE.MeshBasicMaterial({ visible: false })
+);
+const frameEdges = new THREE.LineSegments(
+  new THREE.EdgesGeometry(new THREE.PlaneGeometry(0.95, 0.26)),
+  new THREE.LineBasicMaterial({ color: 0x00ffcc, transparent: true, opacity: 0.5, depthTest: false })
+);
+frameEdges.renderOrder = 999;
+hudGroup.add(frameEdges);
+
 const hudScore  = makeSprite('SCORE: 0',  '#00ffcc');
 const hudTimer  = makeSprite('60s',        '#ffaa00');
 const hudCombo  = makeSprite('',           '#ff3366', 52);
 const hudLives  = makeSprite('♥ ♥ ♥',    '#ff3366');
 const hudWave   = makeSprite('',           '#ffffff', 52);
 
-hudScore.position.set(-2.0, 2.3, -3.5);
-hudTimer.position.set( 0.0, 2.3, -3.5);
-hudCombo.position.set( 0.0, 2.85,-3.5);
-hudLives.position.set( 2.0, 2.3, -3.5);
-hudWave.position.set(  0.0, 3.3, -3.5);
+hudScore.position.set(-0.32, -0.02, 0.001);
+hudTimer.position.set( 0.0,  -0.02, 0.001);
+hudCombo.position.set( 0.0,   0.07, 0.001);
+hudLives.position.set( 0.32, -0.02, 0.001);
+hudWave.position.set(  0.0,   0.105,0.001);
 
-[hudScore, hudTimer, hudCombo, hudLives, hudWave].forEach(s => scene.add(s));
+[hudScore, hudTimer, hudCombo, hudLives, hudWave].forEach(s => {
+  s.material.depthTest = false;
+  s.renderOrder = 1000;
+  hudGroup.add(s);
+});
+
+camera.add(hudGroup);
+scene.add(camera); // Kamera muss Teil der Szene sein, damit ihre Kinder gerendert werden
 
 // ── GAME STATE ────────────────────────────────────────────────────────────────
 const G = {
@@ -535,15 +526,10 @@ function spawnUFO(speedMult = 1) {
 
   scene.add(group);
 
-  // Unsichtbare Kollisionskugel — kleiner als das Modell, für präzisere Treffer
-  const hitRadius = 0.47; // proportional verkleinert (UFO ist jetzt 15% kleiner)
-  const hitSphere = new THREE.Mesh(
-    new THREE.SphereGeometry(hitRadius, 8, 8),
-    new THREE.MeshBasicMaterial({ visible: false })
-  );
-  group.add(hitSphere);
+  // Kollisionsradius für präzise analytische Treffer-Berechnung (siehe shoot())
+  const hitRadius = 0.47;
 
-  const ufo = { group, model, glow, hitSphere, speed: baseSpeed, rotSpeed, dir,
+  const ufo = { group, model, glow, speed: baseSpeed, rotSpeed, dir,
                 dodgeTimer: 0, dodgeCooldown: 1.5 + Math.random() * 2,
                 willStrafe, strafeStartDist, strafing: false,
                 strafeDir: (Math.random() > 0.5 ? 1 : -1),
@@ -569,9 +555,9 @@ function triggerWave() {
 
 // ── PARTICLES ─────────────────────────────────────────────────────────────────
 function burst(pos, color) {
-  // ── Schicht 1: heller Kernblitz (sehr kurz, sehr hell) ── [+20% Größe]
+  // ── Kernblitz (kurz, hell) ──
   const flashCore = new THREE.Mesh(
-    new THREE.SphereGeometry(0.42, 10, 10),
+    new THREE.SphereGeometry(0.4, 8, 8),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
   );
   flashCore.position.copy(pos);
@@ -580,74 +566,48 @@ function burst(pos, color) {
   scene.add(flashCore);
   G.particles.push(flashCore);
 
-  // ── Schicht 2: viele kleine, schnelle Funken/Trümmer ── [+20% Größe & Streuung]
-  const fragCount = 70;
-  for (let i = 0; i < fragCount; i++) {
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.022 + Math.random() * 0.036, 3, 3),
-      new THREE.MeshBasicMaterial({ color: Math.random() > 0.5 ? color : 0xffaa33 })
-    );
-    m.position.copy(pos);
+  // ── Funken als EINE Punktwolke (ein Draw-Call statt vieler einzelner Meshes) ──
+  const sparkCount = 40;
+  const sparkPositions = new Float32Array(sparkCount * 3);
+  const sparkVelocities = [];
+  const c = new THREE.Color(color);
+  for (let i = 0; i < sparkCount; i++) {
+    sparkPositions[i * 3] = pos.x;
+    sparkPositions[i * 3 + 1] = pos.y;
+    sparkPositions[i * 3 + 2] = pos.z;
     const speed = 3.6 + Math.random() * 8.4;
-    const v = new THREE.Vector3(
+    sparkVelocities.push(new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       (Math.random() - 0.5) * 2,
       (Math.random() - 0.5) * 2
-    ).normalize().multiplyScalar(speed);
-    m._v = v; m._life = 0.5 + Math.random() * 0.6; m._age = 0;
-    scene.add(m);
-    G.particles.push(m);
+    ).normalize().multiplyScalar(speed));
   }
-
-  // ── Schicht 3: größere, langsamere Feuerball-Brocken (dunkler, "zerstörerisch") ── [+20%]
-  const chunkCount = 10;
-  for (let i = 0; i < chunkCount; i++) {
-    const m = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(0.06 + Math.random() * 0.072, 0),
-      new THREE.MeshBasicMaterial({ color: 0x442200 })
-    );
-    m.position.copy(pos);
-    const v = new THREE.Vector3(
-      (Math.random() - 0.5) * 3.6,
-       Math.random() * 3,
-      (Math.random() - 0.5) * 3.6
-    );
-    m._v = v; m._life = 0.9 + Math.random() * 0.6; m._age = 0;
-    m._spin = (Math.random() - 0.5) * 10;
-    scene.add(m);
-    G.particles.push(m);
-  }
-
-  // ── Schicht 4: kurzlebiges Rauch-/Nachglühen (wächst, verblasst langsam) ── [+20%]
-  const smokeCount = 8;
-  for (let i = 0; i < smokeCount; i++) {
-    const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.144 + Math.random() * 0.096, 6, 6),
-      new THREE.MeshBasicMaterial({ color: 0x553311, transparent: true, opacity: 0.5 })
-    );
-    m.position.copy(pos).addScaledVector(new THREE.Vector3(
-      (Math.random()-0.5), Math.random()*0.5, (Math.random()-0.5)
-    ), 0.24);
-    m._v = new THREE.Vector3((Math.random()-0.5)*0.6, Math.random()*0.8+0.2, (Math.random()-0.5)*0.6);
-    m._life = 1.1 + Math.random() * 0.5; m._age = 0; m._isSmoke = true;
-    scene.add(m);
-    G.particles.push(m);
-  }
-
-  // ── Schicht 5: expandierende Schockwellen-Ringe (zwei, versetzt) ──
-  [0, 0.06].forEach(delay => {
-    const ring = new THREE.Mesh(
-      new THREE.TorusGeometry(0.4, 0.06, 8, 32),
-      new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
-    );
-    ring.position.copy(pos);
-    ring._v = new THREE.Vector3(0,0,0);
-    ring._life = 0.35; ring._age = -delay; ring._isRing = true;
-    scene.add(ring);
-    G.particles.push(ring);
+  const sparkGeo = new THREE.BufferGeometry();
+  sparkGeo.setAttribute('position', new THREE.BufferAttribute(sparkPositions, 3));
+  const sparkMat = new THREE.PointsMaterial({
+    color: c, size: 0.09, transparent: true, opacity: 1,
+    sizeAttenuation: true, depthWrite: false
   });
+  const sparks = new THREE.Points(sparkGeo, sparkMat);
+  sparks._isSparks = true;
+  sparks._velocities = sparkVelocities;
+  sparks._v = new THREE.Vector3(0, 0, 0);
+  sparks._life = 0.55; sparks._age = 0;
+  scene.add(sparks);
+  G.particles.push(sparks);
 
-  // ── Punktlicht-Aufblitzen für realistische Beleuchtung der Umgebung ──
+  // ── Eine einzelne Schockwelle ──
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.4, 0.06, 6, 20),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+  );
+  ring.position.copy(pos);
+  ring._v = new THREE.Vector3(0, 0, 0);
+  ring._life = 0.35; ring._age = 0; ring._isRing = true;
+  scene.add(ring);
+  G.particles.push(ring);
+
+  // ── Kurzes Licht-Aufblitzen ──
   const flashLight = new THREE.PointLight(0xffaa33, 6, 8);
   flashLight.position.copy(pos);
   flashLight._v = new THREE.Vector3(0, 0, 0);
@@ -662,29 +622,37 @@ raycaster.near = 0.1;
 
 function shoot(origin, direction) {
   if (!G.active) return;
-  raycaster.ray.origin.copy(origin);
-  raycaster.ray.direction.copy(direction).normalize();
+  const dirN = direction.clone().normalize();
 
-  // Nur die kleinen, unsichtbaren Kollisionskugeln testen — nicht die volle
-  // (teils ungenaue) Modellgeometrie. Das macht Treffer präziser.
-  const targets = G.ufos.map(u => u.hitSphere).filter(Boolean);
-
-  const hits = raycaster.intersectObjects(targets, false);
-
+  // Präzise analytische Ray-Kugel-Kollision (statt Mesh-Raycasting).
+  // Unabhängig von Matrix-Update-Timing oder Geometrieauflösung — exakt.
   let targetUfo = null;
-  let targetIdx = -1;
+  let closestT = Infinity;
   let hitPoint = null;
 
-  if (hits.length > 0) {
-    const hitMesh = hits[0].object;
-    targetIdx = G.ufos.findIndex(u => u.hitSphere === hitMesh);
-    if (targetIdx !== -1) {
-      targetUfo = G.ufos[targetIdx];
-      hitPoint = hits[0].point.clone();
+  for (const u of G.ufos) {
+    const center = u.group.position; // UFO-Mittelpunkt in Weltkoordinaten
+    const oc = origin.clone().sub(center);
+    const b = oc.dot(dirN);
+    const c = oc.dot(oc) - u.radius * u.radius;
+    const disc = b * b - c;
+    if (disc < 0) continue; // Strahl verfehlt die Kugel komplett
+
+    const sqrtDisc = Math.sqrt(disc);
+    const t = -b - sqrtDisc; // näherer Schnittpunkt
+    if (t < 0) continue; // Kugel liegt hinter dem Schussursprung
+
+    if (t < closestT) {
+      closestT = t;
+      targetUfo = u;
     }
   }
 
-  spawnProjectile(origin.clone(), direction.clone(), targetUfo, hitPoint);
+  if (targetUfo) {
+    hitPoint = origin.clone().addScaledVector(dirN, closestT);
+  }
+
+  spawnProjectile(origin.clone(), dirN.clone(), targetUfo, hitPoint);
 
   if (!targetUfo) {
     G.combo = 0;
@@ -949,7 +917,7 @@ renderer.setAnimationLoop(() => {
   for (let i = G.particles.length - 1; i >= 0; i--) {
     const p = G.particles[i];
     p._age += dt;
-    if (p._age < 0) continue; // verzögerter Start (z.B. zweiter Schockwellenring)
+    if (p._age < 0) continue;
 
     if (p._isLight) {
       const prog = Math.min(p._age / p._life, 1);
@@ -958,17 +926,33 @@ renderer.setAnimationLoop(() => {
       continue;
     }
 
+    if (p._isSparks) {
+      // Funken-Punktwolke: alle Punkte in einem Schritt per Buffer-Update bewegen
+      const posAttr = p.geometry.attributes.position;
+      const arr = posAttr.array;
+      for (let j = 0; j < p._velocities.length; j++) {
+        const v = p._velocities[j];
+        v.y -= 6 * dt;
+        arr[j * 3]     += v.x * dt;
+        arr[j * 3 + 1] += v.y * dt;
+        arr[j * 3 + 2] += v.z * dt;
+      }
+      posAttr.needsUpdate = true;
+      const prog = Math.min(p._age / p._life, 1);
+      p.material.opacity = 1 - prog;
+      if (p._age >= p._life) { scene.remove(p); G.particles.splice(i, 1); }
+      continue;
+    }
+
     p.position.addScaledVector(p._v, dt);
     if (!p._isRing && !p._isFlash) p._v.y -= 6 * dt;
-    if (p._spin) p.rotation.x += p._spin * dt, p.rotation.y += p._spin * 0.7 * dt;
 
     const prog = Math.min(p._age / p._life, 1);
-    p.material.opacity = (p._isFlash ? 1 : (p._isSmoke ? 0.5 : 1)) * (1 - prog);
+    p.material.opacity = (p._isFlash ? 1 : 1) * (1 - prog);
     p.material.transparent = true;
 
     if (p._isRing) p.scale.setScalar(1 + prog * 5);
     if (p._isFlash) p.scale.setScalar(1 + prog * 1.5);
-    if (p._isSmoke) p.scale.setScalar(1 + prog * 2.2);
 
     if (p._age >= p._life) { scene.remove(p); G.particles.splice(i, 1); }
   }
