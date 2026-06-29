@@ -458,7 +458,7 @@ function base64ToArrayBuffer(base64) {
   return bytes.buffer;
 }
 
-function fixMaterials(root) {
+function fixMaterials(root, emissiveBoost = 0) {
   root.traverse(child => {
     if (child.isMesh) {
       child.castShadow = true;
@@ -476,13 +476,22 @@ function fixMaterials(root) {
           mat.metalness = Math.min(mat.metalness, 0.4);
           mat.roughness = Math.max(mat.roughness, 0.4);
         }
+        if (emissiveBoost > 0 && mat.emissive !== undefined) {
+          // Verstärkt das Eigenleuchten der Textur/Oberfläche, ohne die
+          // Grundfarbe zu verändern — sorgt für einen kräftigeren Glow,
+          // besonders auf den helleren/farbigen Materialbereichen.
+          if (mat.emissive.r === 0 && mat.emissive.g === 0 && mat.emissive.b === 0 && mat.color) {
+            mat.emissive.copy(mat.color);
+          }
+          mat.emissiveIntensity = emissiveBoost;
+        }
         mat.needsUpdate = true;
       });
     }
   });
 }
 
-function loadGLBFromBase64(base64, targetSize = 1.8) {
+function loadGLBFromBase64(base64, targetSize = 1.8, emissiveBoost = 0) {
   return new Promise((resolve, reject) => {
     try {
       const arrayBuffer = base64ToArrayBuffer(base64);
@@ -497,7 +506,7 @@ function loadGLBFromBase64(base64, targetSize = 1.8) {
           const maxDim = Math.max(size.x, size.y, size.z);
           root.position.sub(center);
           root.scale.setScalar(targetSize / maxDim);
-          fixMaterials(root);
+          fixMaterials(root, emissiveBoost);
           resolve(root);
         },
         err => reject(err)
@@ -509,8 +518,9 @@ function loadGLBFromBase64(base64, targetSize = 1.8) {
 }
 
 function loadModel() {
-  // UFO Modell — 15% kleiner als zuvor (1.8 → 1.53)
-  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53);
+  // UFO Modell — 15% kleiner als zuvor (1.8 → 1.53), mit verstärktem
+  // Eigenleuchten für besseren Glow-Effekt, besonders aus der Ferne.
+  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 0.55);
 }
 
 let interceptorTemplate = null;
@@ -574,7 +584,15 @@ function spawnUFO(speedMult = 1) {
   const angleBias = Math.pow(Math.random(), 1.6); // weiterhin Häufung Richtung Mitte
   const angle  = angleSign * angleBias * maxAngle;
   const dist   = 70 + Math.random() * 70; // sehr weiter Anflug — ohne Nebel von Anfang an sichtbar
-  const height = 1.5 + Math.random() * 4;
+  // Mehrere klar unterscheidbare Anflughöhen statt eines einzelnen,
+  // schmalen Zufallsbereichs — manche UFOs kommen tief, manche hoch.
+  const heightLayers = [
+    { min: 0.6,  max: 2.0 },  // tief, knapp über dem Boden
+    { min: 2.2,  max: 4.0 },  // mittel, etwa Augenhöhe
+    { min: 4.2,  max: 7.0 },  // hoch, von oben kommend
+  ];
+  const layer = heightLayers[Math.floor(Math.random() * heightLayers.length)];
+  const height = layer.min + Math.random() * (layer.max - layer.min);
   group.position.set(
     Math.sin(angle) * dist,
     height,
@@ -766,11 +784,14 @@ function spawnProjectile(origin, direction, targetUfo, hitPoint) {
 
   projGroup.position.copy(origin);
 
-  const speed = 14; // Einheiten pro Sekunde
+  const speed = 45; // deutlich schneller — UFOs spawnen jetzt sehr weit entfernt
   const dir = direction.clone().normalize();
 
-  // Ziel-Endpunkt: entweder der Treffpunkt am UFO, oder einfach weit geradeaus
-  const endPoint = hitPoint ? hitPoint.clone() : origin.clone().addScaledVector(dir, 40);
+  // Ziel-Endpunkt nur als Fallback für Fehlschüsse (kein UFO getroffen).
+  // Bei einem Treffer wird der Torpedo per Homing dem tatsächlichen,
+  // sich bewegenden UFO nachgeführt statt zu einem einmalig berechneten,
+  // dadurch veralteten Punkt zu fliegen.
+  const endPoint = hitPoint ? hitPoint.clone() : origin.clone().addScaledVector(dir, 120);
   const totalDist = origin.distanceTo(endPoint);
   const flightTime = Math.max(totalDist / speed, 0.05);
 
@@ -962,8 +983,8 @@ renderer.setAnimationLoop(() => {
         if (Math.abs(group.position.x) > 9) {
           u.strafeDir = -Math.sign(group.position.x);
         }
-        if (group.position.y < 1 || group.position.y > 6) {
-          u.strafeDirY = -Math.sign(group.position.y - 3.5);
+        if (group.position.y < 0.5 || group.position.y > 7.5) {
+          u.strafeDirY = -Math.sign(group.position.y - 4);
         }
       } else {
         // Anflugphase: strikt geradlinige Bewegung, keine Richtungsänderung.
@@ -975,7 +996,7 @@ renderer.setAnimationLoop(() => {
 
       // Bounce off walls
       if (Math.abs(group.position.x) > 16) { dir.x *= -1; }
-      if (group.position.y < 0.8 || group.position.y > 6) { dir.y *= -1; }
+      if (group.position.y < 0.5 || group.position.y > 7.5) { dir.y *= -1; }
 
       // If UFO flies past the player (z > 2) → lose a life
       if (group.position.z > 2.5) {
@@ -1057,6 +1078,23 @@ renderer.setAnimationLoop(() => {
   for (let i = G.bullets.length - 1; i >= 0; i--) {
     const proj = G.bullets[i];
     proj.age += dt;
+
+    // Homing: bei einem gültigen Ziel wird die Flugrichtung jeden Frame neu
+    // auf die AKTUELLE Position des UFOs ausgerichtet. Vorher flog der
+    // Torpedo zu einem einmalig berechneten, festen Punkt — bei den großen
+    // Distanzen und der UFO-Geschwindigkeit war das Ziel oft längst nicht
+    // mehr dort, wenn der Torpedo ankam ("Treffer ohne Explosion").
+    const stillExists = proj.targetUfo && G.ufos.includes(proj.targetUfo);
+    if (stillExists) {
+      const toTarget = proj.targetUfo.group.position.clone().sub(proj.group.position);
+      const distToTarget = toTarget.length();
+      if (distToTarget > 0.001) {
+        toTarget.normalize();
+        // Sanftes Einlenken statt sofortigem Snap, wirkt wie ein lenkbares Geschoss
+        proj.dir.lerp(toTarget, Math.min(1, dt * 10)).normalize();
+      }
+    }
+
     proj.group.position.addScaledVector(proj.dir, proj.speed * dt);
     proj.group.lookAt(proj.group.position.clone().add(proj.dir));
 
@@ -1064,11 +1102,19 @@ renderer.setAnimationLoop(() => {
     const pulse = 1 + Math.sin(t * 20) * 0.15;
     proj.group.children[0].scale.setScalar(pulse);
 
-    const arrived = proj.age >= proj.flightTime;
-    const outOfRange = proj.group.position.distanceTo(proj.endPoint) < 0.15;
+    // Treffer wird durch tatsächliche Nähe zum (jetzt aktuellen) Ziel
+    // ausgelöst, nicht durch eine vorab berechnete Flugzeit.
+    let hitNow = false;
+    if (stillExists) {
+      const distNow = proj.group.position.distanceTo(proj.targetUfo.group.position);
+      if (distNow < proj.targetUfo.radius + 0.25) hitNow = true;
+    }
 
-    if (arrived || outOfRange) {
-      if (proj.targetUfo && !proj.resolved) {
+    const maxLifeExceeded = proj.age > 6; // Sicherheitsnetz gegen endlos fliegende Torpedos
+    const outOfRange = !stillExists && proj.group.position.distanceTo(proj.endPoint) < 0.15;
+
+    if (hitNow || maxLifeExceeded || outOfRange) {
+      if (hitNow && !proj.resolved) {
         proj.resolved = true;
         resolveProjectileHit(proj);
       }
