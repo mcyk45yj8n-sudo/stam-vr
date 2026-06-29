@@ -482,7 +482,7 @@ function fixMaterials(root, emissiveBoost = 0) {
           // da reines Kopieren oft zu dunklen/gedeckten Tönen führt,
           // die kaum auffallen.
           if (mat.color) {
-            mat.emissive.copy(mat.color).multiplyScalar(1.6);
+            mat.emissive.copy(mat.color).multiplyScalar(1.1);
             // THREE.Color hat kein clampScalar (das ist eine Vector-Methode) —
             // r/g/b einzeln begrenzen, um Werte über 1 zu vermeiden.
             mat.emissive.r = Math.min(mat.emissive.r, 1);
@@ -526,7 +526,7 @@ function loadGLBFromBase64(base64, targetSize = 1.8, emissiveBoost = 0) {
 function loadModel() {
   // UFO Modell — 15% kleiner als zuvor (1.8 → 1.53), mit verstärktem
   // Eigenleuchten für besseren Glow-Effekt, besonders aus der Ferne.
-  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 2.5);
+  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 0.35);
 }
 
 let interceptorTemplate = null;
@@ -582,18 +582,6 @@ function spawnUFO(speedMult = 1) {
   }));
   beacon.scale.setScalar(0.3);
   group.add(beacon);
-
-  // Zusätzliche, deutlich sichtbare Glow-Aura direkt um den Modellkörper.
-  // Da reines emissiveIntensity ohne HDR-Tonemapping oft kaum auffällt,
-  // sorgt dieses additive Sprite garantiert für einen wahrnehmbaren
-  // Leucht-Effekt rund um das UFO selbst (nicht nur als Fernpunkt).
-  const aura = new THREE.Sprite(new THREE.SpriteMaterial({
-    map: getBeaconTexture(), color: 0x55ffcc, transparent: true,
-    depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
-    opacity: 0.55
-  }));
-  aura.scale.setScalar(1.7); // umhüllt das gesamte Modell sichtbar
-  group.add(aura);
 
   // Spawn-Position: enger Frontalkegel statt breitem Bogen — UFOs sollen
   // klar von vorne anfliegen, nicht von der Seite erscheinen.
@@ -883,6 +871,7 @@ function setupControllers() {
     ctrl.add(laser);
 
     // Grip visual — Interceptor-Modell als Pistole, Spitze zeigt nach vorne (-Z)
+    let engineGlow = null;
     if (interceptorTemplate) {
       const gun = interceptorTemplate.clone(true);
       gun.rotation.y = Math.PI; // 180° gedreht — zeigte vorher zum Spieler
@@ -890,6 +879,17 @@ function setupControllers() {
       // nicht von Natur aus auf -Z zeigt, kann hier eine Korrekturrotation
       // ergänzt werden, z.B.: gun.rotation.y = Math.PI / 2;
       ctrl.add(gun);
+
+      // Triebwerks-Glow am hinteren Ende des Modells (entgegengesetzt der
+      // Mündung/Schussrichtung, also Richtung +Z, zur Hand hin).
+      engineGlow = new THREE.Sprite(new THREE.SpriteMaterial({
+        map: getBeaconTexture(), color: 0x33aaff, transparent: true,
+        depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+        opacity: 0.85
+      }));
+      engineGlow.scale.setScalar(0.05);
+      engineGlow.position.set(0, 0, 0.1); // hinteres Ende, nah am Lauf-Gegenpunkt
+      ctrl.add(engineGlow);
     } else {
       // Fallback falls Modell nicht geladen werden konnte
       ctrl.add(new THREE.Mesh(
@@ -897,6 +897,9 @@ function setupControllers() {
         new THREE.MeshStandardMaterial({ color: 0x223344, metalness: 0.9 })
       ));
     }
+
+    ctrl.userData.engineGlow = engineGlow;
+    ctrl.userData.trailPositions = []; // für Bewegungs-Leuchtspur
 
     scene.add(ctrl);
     G.controllers = G.controllers || [];
@@ -944,6 +947,47 @@ renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
   checkRestartButton();
   const t  = clock.elapsedTime;
+
+  // ── Triebwerks-Leuchtspur an den Controllern ──
+  // Pulsiert leicht im Stand, und hinterlässt bei schneller Handbewegung
+  // kurzlebige Glühpunkte, die wie ein nachziehender Schweif wirken.
+  if (G.controllers) {
+    for (const ctrl of G.controllers) {
+      const glow = ctrl.userData && ctrl.userData.engineGlow;
+      if (!glow) continue;
+
+      // Sanftes Pulsieren im Ruhezustand
+      glow.scale.setScalar(0.05 + Math.sin(t * 8 + ctrl.id) * 0.012);
+
+      // Aktuelle Weltposition des Triebwerks ermitteln
+      const worldPos = new THREE.Vector3();
+      glow.getWorldPosition(worldPos);
+
+      const trail = ctrl.userData.trailPositions;
+      const lastPos = trail.length ? trail[trail.length - 1].pos : null;
+      const moveDist = lastPos ? worldPos.distanceTo(lastPos) : 0;
+
+      // Nur bei spürbarer Bewegung neue Spur-Partikel erzeugen
+      if (moveDist > 0.015) {
+        const ghost = new THREE.Sprite(new THREE.SpriteMaterial({
+          map: getBeaconTexture(), color: 0x33aaff, transparent: true,
+          depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+          opacity: 0.5
+        }));
+        ghost.position.copy(worldPos);
+        ghost.scale.setScalar(0.045);
+        ghost._v = new THREE.Vector3(0, 0, 0);
+        ghost._life = 0.18; // kurzer, knapper Schweif statt langer Spur
+        ghost._age = 0;
+        ghost._isTrailGhost = true; // eigene Fade-Logik: schrumpft & verblasst
+        scene.add(ghost);
+        G.particles.push(ghost);
+
+        trail.push({ pos: worldPos.clone() });
+        if (trail.length > 8) trail.shift();
+      }
+    }
+  }
 
   if (G.active) {
     // ── Timer ──
@@ -1080,7 +1124,7 @@ renderer.setAnimationLoop(() => {
     }
 
     p.position.addScaledVector(p._v, dt);
-    if (!p._isRing && !p._isFlash) p._v.y -= 6 * dt;
+    if (!p._isRing && !p._isFlash && !p._isTrailGhost) p._v.y -= 6 * dt;
 
     const prog = Math.min(p._age / p._life, 1);
     p.material.opacity = (p._isFlash ? 1 : 1) * (1 - prog);
@@ -1088,6 +1132,7 @@ renderer.setAnimationLoop(() => {
 
     if (p._isRing) p.scale.setScalar(1 + prog * 5);
     if (p._isFlash) p.scale.setScalar(1 + prog * 1.5);
+    if (p._isTrailGhost) p.scale.setScalar(1 - prog * 0.7); // schrumpft statt zu wachsen
 
     if (p._age >= p._life) { scene.remove(p); G.particles.splice(i, 1); }
   }
