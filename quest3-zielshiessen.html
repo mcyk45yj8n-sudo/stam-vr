@@ -124,7 +124,10 @@ renderer.shadowMap.type = THREE.PCFSoftShadowMap;
 
 const scene = new THREE.Scene();
 scene.background = new THREE.Color(0x02020d);
-scene.fog = new THREE.FogExp2(0x02020d, 0.0009);
+// Kein Nebel — wir sind im Weltraum, keine Atmosphäre die Sichtweite begrenzt.
+// UFOs sollen aus großer Ferne klar erkennbar sein und sich kontinuierlich
+// vergrößernd nähern.
+scene.fog = null;
 
 const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 300);
 camera.position.set(0, 1.6, 0);
@@ -551,17 +554,17 @@ function spawnUFO(speedMult = 1) {
   glow.position.set(0, -0.4, 0);
   group.add(glow);
 
-  // Leucht-Beacon: ein selbstleuchtendes, additiv geblendetes Sprite, das
-  // unabhängig von Beleuchtung, Nebel oder Entfernung als heller, klar
-  // erkennbarer Punkt sichtbar bleibt — macht den Anflug aus der Ferne
-  // nachvollziehbar (PointLight allein reicht dafür nicht, da seine
-  // Reichweite nur die Umgebung beleuchtet, nicht die eigene Sichtbarkeit).
+  // Kleiner, additiv leuchtender Punkt direkt am Modell (nicht als
+  // Ersatzobjekt, sondern als Verstärkung der Eigensichtbarkeit über
+  // Entfernung) — damit das UFO auch bei winziger Pixelgröße aus großer
+  // Ferne als heller Punkt erkennbar bleibt, aber kontinuierlich mit der
+  // echten Modellgröße mitwächst statt hart umzuschalten.
   const beaconTex = getBeaconTexture();
   const beacon = new THREE.Sprite(new THREE.SpriteMaterial({
     map: beaconTex, color: 0x66ffe0, transparent: true,
     depthWrite: false, blending: THREE.AdditiveBlending, fog: false
   }));
-  beacon.scale.setScalar(1.4);
+  beacon.scale.setScalar(0.3);
   group.add(beacon);
 
   // Spawn-Position: enger Frontalkegel statt breitem Bogen — UFOs sollen
@@ -570,7 +573,7 @@ function spawnUFO(speedMult = 1) {
   const angleSign = Math.random() > 0.5 ? 1 : -1;
   const angleBias = Math.pow(Math.random(), 1.6); // weiterhin Häufung Richtung Mitte
   const angle  = angleSign * angleBias * maxAngle;
-  const dist   = 35 + Math.random() * 30; // weiter Anflug, aber durch Beacon durchgehend sichtbar
+  const dist   = 70 + Math.random() * 70; // sehr weiter Anflug — ohne Nebel von Anfang an sichtbar
   const height = 1.5 + Math.random() * 4;
   group.position.set(
     Math.sin(angle) * dist,
@@ -992,24 +995,16 @@ renderer.setAnimationLoop(() => {
       // Glow pulse
       if (u.glow) u.glow.intensity = 1.5 + Math.sin(t * 4) * 0.8;
 
-      // Beacon: aus großer Ferne nur ein winziger, sternartiger Lichtpunkt.
-      // Das UFO-Modell selbst bleibt unsichtbar, bis es nah genug ist —
-      // so wirkt das UFO zunächst wie ein bewegtes Licht am Himmel und
-      // wird erst kurz vorher als Flugkörper erkennbar.
+      // Beacon: kontinuierlich mitlaufender, kleiner Lichtpunkt am UFO.
+      // Bleibt aus großer Ferne als Orientierungspunkt sichtbar, blendet
+      // aber gleichmäßig (kein Sprung) aus, sobald das Modell selbst aus
+      // eigener Größe gut erkennbar ist.
       if (u.beacon) {
         const distNow = camera.position.distanceTo(group.position);
-        const handoff = 15; // Distanz, ab der das Modell übernimmt
-        const isFar = distNow > handoff;
-
-        u.beacon.visible = isFar;
-        u.model.visible  = !isFar;
-
-        if (isFar) {
-          // Punktgröße bleibt klein und nahezu konstant — wirkt wie ein Stern,
-          // nicht wie ein wachsendes Objekt.
-          u.beacon.scale.setScalar(0.16);
-          u.beacon.material.opacity = 0.75 + Math.sin(t * 6) * 0.2;
-        }
+        // Voll sichtbar weit weg, sanft ausblendend zwischen 25 und 8 Einheiten
+        const fade = THREE.MathUtils.clamp((distNow - 8) / 17, 0, 1);
+        u.beacon.material.opacity = fade * (0.8 + Math.sin(t * 6) * 0.2);
+        u.beacon.scale.setScalar(0.3);
       }
     });
   }
