@@ -303,10 +303,10 @@ scene.add(floor);
     geo.setAttribute('color', new THREE.Float32BufferAttribute(colors, 3));
     const mat = new THREE.PointsMaterial({
       size, opacity, vertexColors: true,
-      sizeAttenuation: true, depthWrite: false, depthTest: true,
+      sizeAttenuation: true,
+      depthWrite: false, depthTest: false, // Sterne sind Hintergrund — kein Tiefentest nötig, vermeidet Flackern
       map: starSpriteTex,
-      transparent: false,      // mit alphaTest statt Transparenz-Sortierung — vermeidet Render-Artefakte
-      alphaTest: 0.4,          // verwirft die quadratischen Randpixel der Textur zuverlässig
+      transparent: true,
       blending: THREE.AdditiveBlending
     });
     scene.add(new THREE.Points(geo, mat));
@@ -578,17 +578,11 @@ function spawnUFO(speedMult = 1) {
     -Math.cos(angle) * dist
   );
 
-  // Movement direction — primär auf den Spieler zu, mit Variationsanteil
+  // Bewegungsrichtung: geradlinig vom Spawnpunkt durch die Mitte hindurch
+  // auf den Spieler zu und darüber hinaus — kein Rauschen mehr, damit die
+  // Flugbahn klar nachvollziehbar linear bleibt (außer beim Strafing).
   const baseSpeed = (0.72 + Math.random() * 0.72) * speedMult; // +20% gegenüber vorher
-
-  // Vektor Richtung Spieler (Ursprung), leicht zufällig verrauscht
-  const towardPlayer = group.position.clone().negate().normalize();
-  const noise = new THREE.Vector3(
-    (Math.random() - 0.5) * 0.5,
-    (Math.random() - 0.5) * 0.2,
-    (Math.random() - 0.5) * 0.5
-  );
-  const dir = towardPlayer.clone().add(noise).normalize();
+  const dir = group.position.clone().negate().normalize();
 
   const rotSpeed = (6 + Math.random() * 8) * (Math.random() > 0.5 ? 1 : -1);
 
@@ -958,20 +952,9 @@ renderer.setAnimationLoop(() => {
           u.strafeDir = -Math.sign(group.position.x);
         }
       } else {
-        // Anflugphase: gelegentlicher kleiner Schlenker, aber im Kern
-        // weiterhin Richtung Spieler.
-        u.dodgeTimer += dt;
-        if (u.dodgeTimer >= u.dodgeCooldown) {
-          u.dodgeTimer = 0;
-          u.dodgeCooldown = 1.2 + Math.random() * 2.2;
-          const towardPlayer = group.position.clone().negate().normalize();
-          const jerk = new THREE.Vector3(
-            (Math.random() - 0.5) * 0.8,
-            (Math.random() - 0.5) * 0.3,
-            0
-          );
-          dir.copy(towardPlayer.add(jerk)).normalize();
-        }
+        // Anflugphase: strikt geradlinige Bewegung, keine Richtungsänderung.
+        // dir wurde beim Spawn einmalig berechnet und bleibt unverändert,
+        // bis das UFO ggf. ins Strafing wechselt.
       }
 
       group.position.addScaledVector(dir, u.speed * dt);
