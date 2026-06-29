@@ -1,0 +1,581 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+  <meta charset="UTF-8">
+  <title>UFO ASSAULT — Quest 3</title>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+    body { background: #000; overflow: hidden; font-family: 'Courier New', monospace; }
+
+    #overlay {
+      position: fixed; inset: 0;
+      display: flex; flex-direction: column;
+      align-items: center; justify-content: center;
+      background: radial-gradient(ellipse at center, #05050f 0%, #000 100%);
+      z-index: 10; color: #fff;
+      gap: 1rem;
+    }
+    #overlay h1 {
+      font-size: clamp(2.5rem, 7vw, 5rem);
+      letter-spacing: 0.4em;
+      text-transform: uppercase;
+      color: #00ffcc;
+      text-shadow: 0 0 40px #00ffccaa, 0 0 100px #00ffcc44;
+      animation: pulse 2s ease-in-out infinite;
+    }
+    @keyframes pulse {
+      0%,100% { text-shadow: 0 0 40px #00ffccaa, 0 0 100px #00ffcc44; }
+      50%      { text-shadow: 0 0 80px #00ffccff, 0 0 160px #00ffcc88; }
+    }
+    #overlay .sub {
+      color: #556; letter-spacing: 0.2em; font-size: 0.85rem; margin-bottom: 1rem;
+    }
+    #startBtn {
+      padding: 1rem 3.5rem;
+      background: transparent;
+      border: 2px solid #00ffcc;
+      color: #00ffcc;
+      font-family: 'Courier New', monospace;
+      font-size: 1.1rem;
+      letter-spacing: 0.25em;
+      cursor: pointer;
+      text-transform: uppercase;
+      transition: all 0.3s;
+      box-shadow: 0 0 20px #00ffcc44;
+    }
+    #startBtn:hover {
+      background: #00ffcc22;
+      box-shadow: 0 0 60px #00ffcc88;
+      transform: scale(1.05);
+    }
+    #hintText {
+      color: #445; font-size: 0.75rem; letter-spacing: 0.1em; margin-top: 0.5rem;
+    }
+    #errorMsg { color: #ff4455; text-align: center; font-size: 0.9rem; display:none; }
+    canvas { display: block; }
+  </style>
+</head>
+<body>
+
+<div id="overlay">
+  <h1>UFO ASSAULT</h1>
+  <div class="sub">WebXR · Meta Quest 3 · Vernichte die Angreifer</div>
+  <button id="startBtn">STARTEN</button>
+  <div id="hintText">Quest Browser: Drücke "STARTEN" → dann "Enter VR"<br>Desktop: Mausklick zum Schießen</div>
+  <div id="errorMsg"></div>
+</div>
+
+<canvas id="c"></canvas>
+
+<script type="importmap">
+{
+  "imports": {
+    "three":         "https://cdn.jsdelivr.net/npm/three@0.165.0/build/three.module.js",
+    "three/addons/": "https://cdn.jsdelivr.net/npm/three@0.165.0/examples/jsm/"
+  }
+}
+</script>
+<script type="module">
+import * as THREE    from 'three';
+import { VRButton }   from 'three/addons/webxr/VRButton.js';
+import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
+import { UFO_MODEL_BASE64 } from './ufo-model-data.js';
+
+// ── RENDERER ────────────────────────────────────────────────────────────────
+const canvas = document.getElementById('c');
+const renderer = new THREE.WebGLRenderer({ canvas, antialias: true });
+renderer.setPixelRatio(Math.min(window.devicePixelRatio, 2));
+renderer.setSize(window.innerWidth, window.innerHeight);
+renderer.xr.enabled = true;
+renderer.shadowMap.enabled = true;
+renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+
+const scene = new THREE.Scene();
+scene.background = new THREE.Color(0x02020d);
+scene.fog = new THREE.FogExp2(0x02020d, 0.025);
+
+const camera = new THREE.PerspectiveCamera(80, window.innerWidth / window.innerHeight, 0.05, 300);
+camera.position.set(0, 1.6, 0);
+
+window.addEventListener('resize', () => {
+  camera.aspect = window.innerWidth / window.innerHeight;
+  camera.updateProjectionMatrix();
+  renderer.setSize(window.innerWidth, window.innerHeight);
+});
+
+// ── LIGHTING ─────────────────────────────────────────────────────────────────
+scene.add(new THREE.AmbientLight(0x223355, 2.5));
+
+const sun = new THREE.DirectionalLight(0x88ccff, 2);
+sun.position.set(5, 15, 5);
+sun.castShadow = true;
+scene.add(sun);
+
+// Coloured rim lights for atmosphere
+[
+  [0xff3366, -10, 4, -15],
+  [0x3366ff,  10, 4, -15],
+  [0x00ffcc,   0, 8,  -8],
+].forEach(([col, x, y, z]) => {
+  const pl = new THREE.PointLight(col, 2, 40);
+  pl.position.set(x, y, z);
+  scene.add(pl);
+});
+
+// ── FLOOR / GRID ─────────────────────────────────────────────────────────────
+const floor = new THREE.Mesh(
+  new THREE.PlaneGeometry(120, 120),
+  new THREE.MeshStandardMaterial({ color: 0x080818, roughness: 1, metalness: 0 })
+);
+floor.rotation.x = -Math.PI / 2;
+floor.receiveShadow = true;
+scene.add(floor);
+
+const grid = new THREE.GridHelper(120, 60, 0x00ffcc, 0x112244);
+grid.material.opacity = 0.25;
+grid.material.transparent = true;
+scene.add(grid);
+
+// ── STARS ────────────────────────────────────────────────────────────────────
+{
+  const verts = [];
+  for (let i = 0; i < 3000; i++) {
+    verts.push(
+      (Math.random() - 0.5) * 300,
+      Math.random() * 120 + 8,
+      (Math.random() - 0.5) * 300
+    );
+  }
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.Float32BufferAttribute(verts, 3));
+  scene.add(new THREE.Points(geo, new THREE.PointsMaterial({ color: 0x8899cc, size: 0.18 })));
+}
+
+// ── SPRITE HUD ───────────────────────────────────────────────────────────────
+function makeSprite(text, color = '#00ffcc', fontSize = 64) {
+  const c = document.createElement('canvas');
+  c.width = 512; c.height = 128;
+  const ctx = c.getContext('2d');
+  const spr = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: new THREE.CanvasTexture(c), transparent: true, depthTest: false
+  }));
+  spr._c = c; spr._ctx = ctx; spr._color = color; spr._fs = fontSize;
+  spr.scale.set(2.2, 0.55, 1);
+  updateSprite(spr, text);
+  return spr;
+}
+function updateSprite(spr, text) {
+  const { _c: c, _ctx: ctx } = spr;
+  ctx.clearRect(0, 0, c.width, c.height);
+  ctx.font = `bold ${spr._fs}px "Courier New"`;
+  ctx.fillStyle = spr._color;
+  ctx.shadowColor = spr._color;
+  ctx.shadowBlur = 18;
+  ctx.textAlign = 'center';
+  ctx.fillText(text, 256, 82);
+  spr.material.map.needsUpdate = true;
+}
+
+const hudScore  = makeSprite('SCORE: 0',  '#00ffcc');
+const hudTimer  = makeSprite('60s',        '#ffaa00');
+const hudCombo  = makeSprite('',           '#ff3366', 52);
+const hudLives  = makeSprite('♥ ♥ ♥',    '#ff3366');
+const hudWave   = makeSprite('',           '#ffffff', 52);
+
+hudScore.position.set(-2.0, 2.3, -3.5);
+hudTimer.position.set( 0.0, 2.3, -3.5);
+hudCombo.position.set( 0.0, 2.85,-3.5);
+hudLives.position.set( 2.0, 2.3, -3.5);
+hudWave.position.set(  0.0, 3.3, -3.5);
+
+[hudScore, hudTimer, hudCombo, hudLives, hudWave].forEach(s => scene.add(s));
+
+// ── GAME STATE ────────────────────────────────────────────────────────────────
+const G = {
+  active:   false,
+  score:    0,
+  combo:    0,
+  lives:    5,
+  timeLeft: 90,
+  wave:     0,
+  ufos:     [],      // { group, speed, rotSpeed, dir, dodgeTimer, dodgeCooldown }
+  particles:[],
+  bullets:  [],
+};
+
+// ── UFO MODEL ────────────────────────────────────────────────────────────────
+let ufoTemplate = null;  // cloned per spawn
+
+const loader = new GLTFLoader();
+
+function base64ToArrayBuffer(base64) {
+  const binaryStr = atob(base64);
+  const len = binaryStr.length;
+  const bytes = new Uint8Array(len);
+  for (let i = 0; i < len; i++) bytes[i] = binaryStr.charCodeAt(i);
+  return bytes.buffer;
+}
+
+function loadModel() {
+  // Modell ist als Base64 eingebettet — kein externer Dateizugriff,
+  // kein CORS, kein 404 mehr möglich.
+  return new Promise((resolve, reject) => {
+    try {
+      const arrayBuffer = base64ToArrayBuffer(UFO_MODEL_BASE64);
+      loader.parse(
+        arrayBuffer,
+        '',
+        gltf => {
+          const root = gltf.scene;
+          const box = new THREE.Box3().setFromObject(root);
+          const size = box.getSize(new THREE.Vector3());
+          const maxDim = Math.max(size.x, size.y, size.z);
+          root.scale.setScalar(1.8 / maxDim);
+          root.traverse(child => {
+            if (child.isMesh) {
+              child.castShadow = true;
+              child.receiveShadow = true;
+            }
+          });
+          resolve(root);
+        },
+        err => reject(err)
+      );
+    } catch (e) {
+      reject(e);
+    }
+  });
+}
+
+// ── SPAWN UFO ─────────────────────────────────────────────────────────────────
+function spawnUFO(speedMult = 1) {
+  if (!ufoTemplate) return;
+
+  const group = new THREE.Group();
+  const model = ufoTemplate.clone(true);
+  group.add(model);
+
+  // Engine glow
+  const glow = new THREE.PointLight(0x00ffcc, 2, 5);
+  glow.position.set(0, -0.4, 0);
+  group.add(glow);
+
+  // Random position: spread across front hemisphere, various heights
+  const angle  = (Math.random() - 0.5) * Math.PI * 1.4;
+  const dist   = 10 + Math.random() * 12;
+  const height = 1.5 + Math.random() * 4;
+  group.position.set(
+    Math.sin(angle) * dist,
+    height,
+    -Math.cos(angle) * dist
+  );
+
+  // Movement direction — drift sideways & slightly toward player
+  const baseSpeed = (0.6 + Math.random() * 0.6) * speedMult;
+  const dir = new THREE.Vector3(
+    (Math.random() - 0.5) * 1.5,
+    (Math.random() - 0.5) * 0.3,
+    0.2 + Math.random() * 0.4          // slowly closing in
+  ).normalize();
+
+  const rotSpeed = (3 + Math.random() * 4) * (Math.random() > 0.5 ? 1 : -1);
+
+  scene.add(group);
+
+  const ufo = { group, model, glow, speed: baseSpeed, rotSpeed, dir,
+                dodgeTimer: 0, dodgeCooldown: 1.5 + Math.random() * 2,
+                radius: 1.2 };
+  G.ufos.push(ufo);
+}
+
+// ── WAVE SYSTEM ───────────────────────────────────────────────────────────────
+let waveTimer    = 0;
+const waveInterval = 8;   // seconds between waves
+
+function triggerWave() {
+  G.wave++;
+  const count = Math.min(1 + Math.floor(G.wave / 2), 3);   // 1–3 UFOs
+  const speedMult = 1 + (G.wave - 1) * 0.12;
+  for (let i = 0; i < count; i++) {
+    setTimeout(() => spawnUFO(speedMult), i * 600);
+  }
+  updateSprite(hudWave, `WELLE ${G.wave}  ×${count}`);
+  setTimeout(() => updateSprite(hudWave, ''), 2500);
+}
+
+// ── PARTICLES ─────────────────────────────────────────────────────────────────
+function burst(pos, color) {
+  for (let i = 0; i < 22; i++) {
+    const m = new THREE.Mesh(
+      new THREE.SphereGeometry(0.07 + Math.random() * 0.07, 4, 4),
+      new THREE.MeshBasicMaterial({ color })
+    );
+    m.position.copy(pos);
+    const v = new THREE.Vector3(
+      (Math.random() - 0.5) * 6,
+       Math.random() * 4 + 1,
+      (Math.random() - 0.5) * 6
+    );
+    m._v = v; m._life = 0.7 + Math.random() * 0.5; m._age = 0;
+    scene.add(m);
+    G.particles.push(m);
+  }
+  // Flash ring
+  const ring = new THREE.Mesh(
+    new THREE.TorusGeometry(0.5, 0.08, 8, 32),
+    new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 0.9 })
+  );
+  ring.position.copy(pos);
+  ring._v = new THREE.Vector3(0,0,0);
+  ring._life = 0.3; ring._age = 0; ring._isRing = true;
+  scene.add(ring);
+  G.particles.push(ring);
+}
+
+// ── RAYCASTER / SHOOTING ──────────────────────────────────────────────────────
+const raycaster = new THREE.Raycaster();
+raycaster.near = 0.1;
+
+function shoot(origin, direction) {
+  if (!G.active) return;
+  raycaster.ray.origin.copy(origin);
+  raycaster.ray.direction.copy(direction).normalize();
+
+  // Collect all meshes of all UFOs
+  const targets = [];
+  G.ufos.forEach(u => u.group.traverse(c => { if (c.isMesh) targets.push(c); }));
+
+  const hits = raycaster.intersectObjects(targets, false);
+  if (hits.length > 0) {
+    // find which UFO was hit
+    const hitMesh = hits[0].object;
+    const idx = G.ufos.findIndex(u => {
+      let found = false;
+      u.group.traverse(c => { if (c === hitMesh) found = true; });
+      return found;
+    });
+    if (idx !== -1) {
+      const u = G.ufos[idx];
+      burst(u.group.position.clone(), 0x00ffcc);
+      scene.remove(u.group);
+      G.ufos.splice(idx, 1);
+      G.combo++;
+      G.score += 100 * Math.min(G.combo, 5);
+      updateSprite(hudScore, `SCORE: ${G.score}`);
+      updateSprite(hudCombo, G.combo > 1 ? `COMBO ×${Math.min(G.combo,5)}` : '');
+    }
+  } else {
+    G.combo = 0;
+    updateSprite(hudCombo, '');
+  }
+}
+
+// ── CONTROLLERS ───────────────────────────────────────────────────────────────
+let controllersSetup = false;
+function setupControllers() {
+  if (controllersSetup) return;
+  controllersSetup = true;
+
+  for (let i = 0; i < 2; i++) {
+    const ctrl = renderer.xr.getController(i);
+
+    ctrl.addEventListener('selectstart', () => {
+      const tmp = new THREE.Matrix4().identity().extractRotation(ctrl.matrixWorld);
+      const orig = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld);
+      const dir  = new THREE.Vector3(0, 0, -1).applyMatrix4(tmp);
+      shoot(orig, dir);
+    });
+
+    // Laser beam
+    const laser = new THREE.Line(
+      new THREE.BufferGeometry().setFromPoints([
+        new THREE.Vector3(0, 0, 0),
+        new THREE.Vector3(0, 0, -20)
+      ]),
+      new THREE.LineBasicMaterial({ color: 0x00ffcc })
+    );
+    ctrl.add(laser);
+
+    // Grip visual
+    ctrl.add(new THREE.Mesh(
+      new THREE.BoxGeometry(0.055, 0.055, 0.11),
+      new THREE.MeshStandardMaterial({ color: 0x223344, metalness: 0.9 })
+    ));
+
+    scene.add(ctrl);
+  }
+}
+
+// Desktop mouse fallback
+const mouse = new THREE.Vector2();
+window.addEventListener('click', e => {
+  if (renderer.xr.isPresenting || !G.active) return;
+  mouse.x =  (e.clientX / window.innerWidth)  * 2 - 1;
+  mouse.y = -(e.clientY / window.innerHeight) * 2 + 1;
+  raycaster.setFromCamera(mouse, camera);
+  shoot(raycaster.ray.origin, raycaster.ray.direction);
+});
+
+// ── GAME LOOP ─────────────────────────────────────────────────────────────────
+const clock = new THREE.Clock();
+let lastSec  = 0;
+
+renderer.setAnimationLoop(() => {
+  const dt = clock.getDelta();
+  const t  = clock.elapsedTime;
+
+  if (G.active) {
+    // ── Timer ──
+    G.timeLeft -= dt;
+    if (G.timeLeft <= 0) { G.timeLeft = 0; endGame(); }
+    else {
+      const s = Math.ceil(G.timeLeft);
+      if (s !== lastSec) { lastSec = s; updateSprite(hudTimer, `${s}s`); }
+    }
+
+    // ── Waves ──
+    waveTimer += dt;
+    if (waveTimer >= waveInterval) { waveTimer = 0; triggerWave(); }
+
+    // ── UFO movement ──
+    G.ufos.forEach(u => {
+      const { group, dir, rotSpeed } = u;
+
+      // Spin on Z axis
+      group.rotation.z += rotSpeed * dt;
+
+      // Bobbing
+      group.position.y += Math.sin(t * 1.5 + group.rotation.z) * 0.004;
+
+      // Dodge: random lateral jerk every dodgeCooldown seconds
+      u.dodgeTimer += dt;
+      if (u.dodgeTimer >= u.dodgeCooldown) {
+        u.dodgeTimer = 0;
+        u.dodgeCooldown = 0.8 + Math.random() * 2;
+        dir.x += (Math.random() - 0.5) * 2.0;
+        dir.y += (Math.random() - 0.5) * 0.6;
+        dir.normalize();
+      }
+
+      group.position.addScaledVector(dir, u.speed * dt);
+
+      // Bounce off walls
+      if (Math.abs(group.position.x) > 14) { dir.x *= -1; }
+      if (group.position.y < 0.8 || group.position.y > 6) { dir.y *= -1; }
+
+      // If UFO flies past the player (z > 2) → lose a life
+      if (group.position.z > 2.5) {
+        scene.remove(group);
+        const idx = G.ufos.indexOf(u);
+        if (idx !== -1) G.ufos.splice(idx, 1);
+        G.combo = 0;
+        G.lives--;
+        updateSprite(hudCombo, '');
+        const hearts = G.lives > 0
+          ? Array(G.lives).fill('♥').join(' ')
+          : '--- GAME OVER ---';
+        updateSprite(hudLives, hearts);
+        if (G.lives <= 0) endGame();
+      }
+
+      // Glow pulse
+      if (u.glow) u.glow.intensity = 1.5 + Math.sin(t * 4) * 0.8;
+    });
+  }
+
+  // ── Particles ──
+  for (let i = G.particles.length - 1; i >= 0; i--) {
+    const p = G.particles[i];
+    p._age += dt;
+    p.position.addScaledVector(p._v, dt);
+    if (!p._isRing) p._v.y -= 6 * dt;
+    const prog = p._age / p._life;
+    p.material.opacity = 1 - prog;
+    p.material.transparent = true;
+    if (p._isRing) p.scale.setScalar(1 + prog * 4);
+    if (p._age >= p._life) { scene.remove(p); G.particles.splice(i, 1); }
+  }
+
+  renderer.render(scene, camera);
+});
+
+// ── END GAME ──────────────────────────────────────────────────────────────────
+function endGame() {
+  G.active = false;
+  G.ufos.forEach(u => scene.remove(u.group));
+  G.ufos.length = 0;
+  updateSprite(hudTimer, 'ENDE');
+  updateSprite(hudWave,  `FINAL: ${G.score} PTS`);
+  updateSprite(hudCombo, '');
+}
+
+// ── START GAME ────────────────────────────────────────────────────────────────
+function startGame() {
+  G.active   = true;
+  G.score    = 0;
+  G.combo    = 0;
+  G.lives    = 5;
+  G.timeLeft = 90;
+  G.wave     = 0;
+  waveTimer  = waveInterval - 1;   // first wave in ~1 second
+  lastSec    = 90;
+  G.ufos.forEach(u => scene.remove(u.group));
+  G.ufos.length = 0;
+  updateSprite(hudScore, 'SCORE: 0');
+  updateSprite(hudTimer, '90s');
+  updateSprite(hudCombo, '');
+  updateSprite(hudLives, '♥ ♥ ♥ ♥ ♥');
+  updateSprite(hudWave,  'BEREIT...');
+  setTimeout(() => updateSprite(hudWave, ''), 1500);
+  clock.start();
+}
+
+// ── UI WIRING ─────────────────────────────────────────────────────────────────
+const overlay  = document.getElementById('overlay');
+const startBtn = document.getElementById('startBtn');
+const errMsg   = document.getElementById('errorMsg');
+
+startBtn.addEventListener('click', async () => {
+  startBtn.textContent = 'LADE MODELL…';
+  startBtn.disabled = true;
+
+  try {
+    ufoTemplate = await loadModel();
+  } catch (e) {
+    console.error('UFO Modell Ladefehler:', e);
+    errMsg.textContent = 'UFO-Modell konnte nicht geladen werden (Datenfehler im eingebetteten Modell). Konsole für Details prüfen.';
+    errMsg.style.display = 'block';
+    startBtn.textContent = 'STARTEN';
+    startBtn.disabled = false;
+    return;
+  }
+
+  overlay.style.display = 'none';
+
+  // WebXR
+  if (navigator.xr) {
+    const sup = await navigator.xr.isSessionSupported('immersive-vr').catch(() => false);
+    if (sup) {
+      const vrBtn = VRButton.createButton(renderer);
+      Object.assign(vrBtn.style, {
+        position:'fixed', bottom:'20px', left:'50%',
+        transform:'translateX(-50%)', zIndex:'100',
+        padding:'12px 28px',
+        background:'#00ffcc22', border:'2px solid #00ffcc',
+        color:'#00ffcc', fontFamily:"'Courier New',monospace",
+        fontSize:'1rem', letterSpacing:'0.2em', cursor:'pointer'
+      });
+      document.body.appendChild(vrBtn);
+      renderer.xr.addEventListener('sessionstart', () => {
+        setupControllers();
+        startGame();
+      });
+    }
+  }
+
+  // Desktop fallback always starts immediately
+  startGame();
+});
+</script>
+</body>
+</html>
