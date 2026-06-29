@@ -260,12 +260,38 @@ function loadModel() {
           const root = gltf.scene;
           const box = new THREE.Box3().setFromObject(root);
           const size = box.getSize(new THREE.Vector3());
+          const center = box.getCenter(new THREE.Vector3());
           const maxDim = Math.max(size.x, size.y, size.z);
+
+          // Zentriere das Modell auf den Ursprung (0,0,0), damit die
+          // spätere Rotation um die wahre geometrische Mitte des UFOs
+          // erfolgt statt um einen verschobenen Pivot aus Cinema 4D.
+          root.position.sub(center);
           root.scale.setScalar(1.8 / maxDim);
           root.traverse(child => {
             if (child.isMesh) {
               child.castShadow = true;
               child.receiveShadow = true;
+
+              // Fix: Cinema4D-Export kann Materialien erzeugen, die in
+              // manchen WebGL-Kontexten transparent wirken (fehlende
+              // Texturen + hoher metallicFactor ohne Environment-Map,
+              // falsche Normalen, oder verlorene alphaTest-Flags).
+              const mats = Array.isArray(child.material) ? child.material : [child.material];
+              mats.forEach(mat => {
+                if (!mat) return;
+                mat.transparent = false;
+                mat.opacity = 1;
+                mat.depthWrite = true;
+                mat.depthTest = true;
+                mat.alphaTest = 0;
+                mat.side = THREE.DoubleSide;       // falsch orientierte Normalen sichtbar machen
+                if (mat.metalness !== undefined) {
+                  mat.metalness = Math.min(mat.metalness, 0.4); // ohne envMap wirkt 1.0 oft "leer"
+                  mat.roughness = Math.max(mat.roughness, 0.4);
+                }
+                mat.needsUpdate = true;
+              });
             }
           });
           resolve(root);
@@ -472,11 +498,11 @@ renderer.setAnimationLoop(() => {
     G.ufos.forEach(u => {
       const { group, dir, rotSpeed } = u;
 
-      // Spin on Z axis
-      group.rotation.z += rotSpeed * dt;
+      // Spin on Y axis (vertikale Achse — wie eine Untertasse)
+      group.rotation.y += rotSpeed * dt;
 
       // Bobbing
-      group.position.y += Math.sin(t * 1.5 + group.rotation.z) * 0.004;
+      group.position.y += Math.sin(t * 1.5 + group.rotation.y) * 0.004;
 
       // Dodge: random lateral jerk every dodgeCooldown seconds
       u.dodgeTimer += dt;
