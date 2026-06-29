@@ -355,7 +355,7 @@ function spawnUFO(speedMult = 1) {
   );
 
   // Movement direction — drift sideways & slightly toward player
-  const baseSpeed = (0.6 + Math.random() * 0.6) * speedMult;
+  const baseSpeed = (0.72 + Math.random() * 0.72) * speedMult; // +20% gegenüber vorher
   const dir = new THREE.Vector3(
     (Math.random() - 0.5) * 1.5,
     (Math.random() - 0.5) * 0.3,
@@ -366,9 +366,17 @@ function spawnUFO(speedMult = 1) {
 
   scene.add(group);
 
-  const ufo = { group, model, glow, speed: baseSpeed, rotSpeed, dir,
+  // Unsichtbare Kollisionskugel — kleiner als das Modell, für präzisere Treffer
+  const hitRadius = 0.55; // kleiner als die Modellgröße (1.8 Einheiten Durchmesser)
+  const hitSphere = new THREE.Mesh(
+    new THREE.SphereGeometry(hitRadius, 8, 8),
+    new THREE.MeshBasicMaterial({ visible: false })
+  );
+  group.add(hitSphere);
+
+  const ufo = { group, model, glow, hitSphere, speed: baseSpeed, rotSpeed, dir,
                 dodgeTimer: 0, dodgeCooldown: 1.5 + Math.random() * 2,
-                radius: 1.2 };
+                radius: hitRadius };
   G.ufos.push(ufo);
 }
 
@@ -425,9 +433,9 @@ function shoot(origin, direction) {
   raycaster.ray.origin.copy(origin);
   raycaster.ray.direction.copy(direction).normalize();
 
-  // Collect all meshes of all UFOs
-  const targets = [];
-  G.ufos.forEach(u => u.group.traverse(c => { if (c.isMesh) targets.push(c); }));
+  // Nur die kleinen, unsichtbaren Kollisionskugeln testen — nicht die volle
+  // (teils ungenaue) Modellgeometrie. Das macht Treffer präziser.
+  const targets = G.ufos.map(u => u.hitSphere).filter(Boolean);
 
   const hits = raycaster.intersectObjects(targets, false);
 
@@ -437,11 +445,7 @@ function shoot(origin, direction) {
 
   if (hits.length > 0) {
     const hitMesh = hits[0].object;
-    targetIdx = G.ufos.findIndex(u => {
-      let found = false;
-      u.group.traverse(c => { if (c === hitMesh) found = true; });
-      return found;
-    });
+    targetIdx = G.ufos.findIndex(u => u.hitSphere === hitMesh);
     if (targetIdx !== -1) {
       targetUfo = G.ufos[targetIdx];
       hitPoint = hits[0].point.clone();
@@ -533,7 +537,7 @@ function setupControllers() {
       const tmp = new THREE.Matrix4().identity().extractRotation(ctrl.matrixWorld);
       // Lokaler Versatz: Spitze des Interceptors liegt etwas unterhalb/vorne
       // des Controller-Pivots (der am Cockpit/Modellmittelpunkt sitzt).
-      const muzzleOffset = new THREE.Vector3(0, -0.05, -0.12).applyMatrix4(tmp);
+      const muzzleOffset = new THREE.Vector3(0, -0.015, -0.12).applyMatrix4(tmp);
       const orig = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld).add(muzzleOffset);
       const dir  = new THREE.Vector3(0, 0, -1).applyMatrix4(tmp);
       shoot(orig, dir);
@@ -542,8 +546,8 @@ function setupControllers() {
     // Laser beam — startet an der Mündung (gleicher Versatz wie Raycast-Ursprung)
     const laser = new THREE.Line(
       new THREE.BufferGeometry().setFromPoints([
-        new THREE.Vector3(0, -0.05, -0.12),
-        new THREE.Vector3(0, -0.05, -20)
+        new THREE.Vector3(0, -0.015, -0.12),
+        new THREE.Vector3(0, -0.015, -20)
       ]),
       new THREE.LineBasicMaterial({ color: 0x00ffcc })
     );
