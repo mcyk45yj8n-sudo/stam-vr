@@ -482,7 +482,12 @@ function fixMaterials(root, emissiveBoost = 0) {
           // da reines Kopieren oft zu dunklen/gedeckten Tönen führt,
           // die kaum auffallen.
           if (mat.color) {
-            mat.emissive.copy(mat.color).multiplyScalar(1.6).clampScalar(0, 1);
+            mat.emissive.copy(mat.color).multiplyScalar(1.6);
+            // THREE.Color hat kein clampScalar (das ist eine Vector-Methode) —
+            // r/g/b einzeln begrenzen, um Werte über 1 zu vermeiden.
+            mat.emissive.r = Math.min(mat.emissive.r, 1);
+            mat.emissive.g = Math.min(mat.emissive.g, 1);
+            mat.emissive.b = Math.min(mat.emissive.b, 1);
           }
           mat.emissiveIntensity = emissiveBoost;
         }
