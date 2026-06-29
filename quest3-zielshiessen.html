@@ -154,19 +154,145 @@ scene.add(sun);
   scene.add(pl);
 });
 
-// ── FLOOR / GRID ─────────────────────────────────────────────────────────────
+// ── MONDOBERFLÄCHE (prozedural) ─────────────────────────────────────────────────
+// Statt einer flachen Fläche mit Gitter: eine Ebene mit echtem Krater-Relief
+// (Vertex-Displacement), grauer Gesteinsfarbe mit feinem Helligkeits-Rauschen
+// und verstreuten kleinen Felsbrocken. Komplett ohne externe Bilddateien.
+
+const MOON_SIZE = 140;
+const MOON_SEGMENTS = 180;
+
+const floorGeo = new THREE.PlaneGeometry(MOON_SIZE, MOON_SIZE, MOON_SEGMENTS, MOON_SEGMENTS);
+
+// Einfacher, deterministischer Pseudo-Noise (kein externer Library-Import nötig)
+function hashNoise2D(x, y) {
+  const s = Math.sin(x * 12.9898 + y * 78.233) * 43758.5453;
+  return s - Math.floor(s);
+}
+function smoothNoise2D(x, y) {
+  const xi = Math.floor(x), yi = Math.floor(y);
+  const xf = x - xi, yf = y - yi;
+  const a = hashNoise2D(xi, yi);
+  const b = hashNoise2D(xi + 1, yi);
+  const c = hashNoise2D(xi, yi + 1);
+  const d = hashNoise2D(xi + 1, yi + 1);
+  const ux = xf * xf * (3 - 2 * xf);
+  const uy = yf * yf * (3 - 2 * yf);
+  return a + (b - a) * ux + (c - a) * uy * (1 - ux) + (d - b) * ux * uy;
+}
+
+// Zufällige Kraterzentren mit unterschiedlichem Radius/Tiefe vorbereiten
+const craterCount = 55;
+const craters = [];
+for (let i = 0; i < craterCount; i++) {
+  craters.push({
+    x: (Math.random() - 0.5) * MOON_SIZE,
+    z: (Math.random() - 0.5) * MOON_SIZE,
+    r: 1.2 + Math.random() * 7,
+    depth: 0.15 + Math.random() * 0.6
+  });
+}
+
+const posAttr = floorGeo.attributes.position;
+const colorArr = new Float32Array(posAttr.count * 3);
+
+for (let i = 0; i < posAttr.count; i++) {
+  const x = posAttr.getX(i);
+  const y = posAttr.getY(i); // lokal Y der ungerotierten Plane = spätere Welt-Z-Achse
+
+  let height = 0;
+  // Sanftes Grundrelief aus überlagertem Rauschen (verschiedene Frequenzen)
+  height += (smoothNoise2D(x * 0.05, y * 0.05) - 0.5) * 0.6;
+  height += (smoothNoise2D(x * 0.15, y * 0.15) - 0.5) * 0.2;
+  height += (smoothNoise2D(x * 0.4,  y * 0.4)  - 0.5) * 0.06;
+
+  // Krater-Senken mit erhöhtem Rand (realistisches Einschlagprofil)
+  for (const c of craters) {
+    const dx = x - c.x, dz = y - c.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const norm = dist / c.r;
+    if (norm < 1.0) {
+      // Schüsselform: Mitte tief, Rand leicht erhöht, außerhalb glatt
+      const bowl = (Math.cos(norm * Math.PI) - 1) * 0.5; // -1 (Mitte) bis 0 (Rand)
+      const rim  = norm > 0.8 ? Math.sin((norm - 0.8) / 0.2 * Math.PI) * 0.25 : 0;
+      height += (bowl + rim) * c.depth;
+    }
+  }
+
+  posAttr.setZ(i, height); // Z, weil die Plane noch unrotiert ist (wird später um X gedreht)
+
+  // Helligkeits-Rauschen pro Vertex für eine raue, ungleichmäßige Gesteinsoptik
+  const baseGrey = 0.32 + (smoothNoise2D(x * 0.3, y * 0.3) - 0.5) * 0.12;
+  const grey = Math.max(0.12, Math.min(0.55, baseGrey - Math.max(0, -height) * 0.15));
+  colorArr[i * 3] = grey;
+  colorArr[i * 3 + 1] = grey * 0.98; // ganz leichter Grauton, nicht perfekt neutral
+  colorArr[i * 3 + 2] = grey * 0.95;
+}
+posAttr.needsUpdate = true;
+floorGeo.computeVertexNormals();
+floorGeo.setAttribute('color', new THREE.BufferAttribute(colorArr, 3));
+
 const floor = new THREE.Mesh(
-  new THREE.PlaneGeometry(120, 120),
-  new THREE.MeshStandardMaterial({ color: 0x080818, roughness: 1, metalness: 0 })
+  floorGeo,
+  new THREE.MeshStandardMaterial({
+    vertexColors: true,
+    roughness: 0.95,
+    metalness: 0.05,
+    flatShading: false
+  })
 );
 floor.rotation.x = -Math.PI / 2;
 floor.receiveShadow = true;
+floor.castShadow = false;
 scene.add(floor);
 
-const grid = new THREE.GridHelper(120, 60, 0x00ffcc, 0x112244);
-grid.material.opacity = 0.25;
-grid.material.transparent = true;
-scene.add(grid);
+// ── Verstreute kleine Felsbrocken auf der Mondoberfläche ──
+function getMoonHeightAt(worldX, worldZ) {
+  let height = 0;
+  height += (smoothNoise2D(worldX * 0.05, worldZ * 0.05) - 0.5) * 0.6;
+  height += (smoothNoise2D(worldX * 0.15, worldZ * 0.15) - 0.5) * 0.2;
+  height += (smoothNoise2D(worldX * 0.4,  worldZ * 0.4)  - 0.5) * 0.06;
+  for (const c of craters) {
+    const dx = worldX - c.x, dz = worldZ - c.z;
+    const dist = Math.sqrt(dx * dx + dz * dz);
+    const norm = dist / c.r;
+    if (norm < 1.0) {
+      const bowl = (Math.cos(norm * Math.PI) - 1) * 0.5;
+      const rim  = norm > 0.8 ? Math.sin((norm - 0.8) / 0.2 * Math.PI) * 0.25 : 0;
+      height += (bowl + rim) * c.depth;
+    }
+  }
+  return height;
+}
+
+const rockGeoVariants = [
+  new THREE.DodecahedronGeometry(1, 0),
+  new THREE.IcosahedronGeometry(1, 0),
+];
+const rockMat = new THREE.MeshStandardMaterial({ color: 0x3a3733, roughness: 1, metalness: 0.05 });
+const rockCount = 90;
+for (let i = 0; i < rockCount; i++) {
+  const x = (Math.random() - 0.5) * MOON_SIZE * 0.9;
+  const z = (Math.random() - 0.5) * MOON_SIZE * 0.9;
+  // Spielfeld-Mitte etwas freihalten, damit Sicht auf anfliegende UFOs nicht verstellt wird
+  if (Math.abs(x) < 3 && z > -8 && z < 4) continue;
+
+  const scale = 0.08 + Math.random() * 0.45;
+  const rock = new THREE.Mesh(
+    rockGeoVariants[Math.floor(Math.random() * rockGeoVariants.length)],
+    rockMat
+  );
+  rock.scale.set(
+    scale * (0.7 + Math.random() * 0.6),
+    scale * (0.5 + Math.random() * 0.5),
+    scale * (0.7 + Math.random() * 0.6)
+  );
+  rock.position.set(x, getMoonHeightAt(x, z) + scale * 0.3, z);
+  rock.rotation.set(Math.random() * Math.PI, Math.random() * Math.PI, Math.random() * Math.PI);
+  rock.castShadow = true;
+  rock.receiveShadow = true;
+  scene.add(rock);
+}
 
 // ── STARS ────────────────────────────────────────────────────────────────────
 // Realistischerer Weltraum: Sterne in einer vollen Kugel rund um die Szene
@@ -443,9 +569,9 @@ function triggerWave() {
 
 // ── PARTICLES ─────────────────────────────────────────────────────────────────
 function burst(pos, color) {
-  // ── Schicht 1: heller Kernblitz (sehr kurz, sehr hell) ──
+  // ── Schicht 1: heller Kernblitz (sehr kurz, sehr hell) ── [+20% Größe]
   const flashCore = new THREE.Mesh(
-    new THREE.SphereGeometry(0.35, 10, 10),
+    new THREE.SphereGeometry(0.42, 10, 10),
     new THREE.MeshBasicMaterial({ color: 0xffffff, transparent: true, opacity: 1 })
   );
   flashCore.position.copy(pos);
@@ -454,15 +580,15 @@ function burst(pos, color) {
   scene.add(flashCore);
   G.particles.push(flashCore);
 
-  // ── Schicht 2: viele kleine, schnelle Funken/Trümmer ──
+  // ── Schicht 2: viele kleine, schnelle Funken/Trümmer ── [+20% Größe & Streuung]
   const fragCount = 70;
   for (let i = 0; i < fragCount; i++) {
     const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.018 + Math.random() * 0.03, 3, 3),
+      new THREE.SphereGeometry(0.022 + Math.random() * 0.036, 3, 3),
       new THREE.MeshBasicMaterial({ color: Math.random() > 0.5 ? color : 0xffaa33 })
     );
     m.position.copy(pos);
-    const speed = 3 + Math.random() * 7;
+    const speed = 3.6 + Math.random() * 8.4;
     const v = new THREE.Vector3(
       (Math.random() - 0.5) * 2,
       (Math.random() - 0.5) * 2,
@@ -473,18 +599,18 @@ function burst(pos, color) {
     G.particles.push(m);
   }
 
-  // ── Schicht 3: größere, langsamere Feuerball-Brocken (dunkler, "zerstörerisch") ──
+  // ── Schicht 3: größere, langsamere Feuerball-Brocken (dunkler, "zerstörerisch") ── [+20%]
   const chunkCount = 10;
   for (let i = 0; i < chunkCount; i++) {
     const m = new THREE.Mesh(
-      new THREE.DodecahedronGeometry(0.05 + Math.random() * 0.06, 0),
+      new THREE.DodecahedronGeometry(0.06 + Math.random() * 0.072, 0),
       new THREE.MeshBasicMaterial({ color: 0x442200 })
     );
     m.position.copy(pos);
     const v = new THREE.Vector3(
-      (Math.random() - 0.5) * 3,
-       Math.random() * 2.5,
-      (Math.random() - 0.5) * 3
+      (Math.random() - 0.5) * 3.6,
+       Math.random() * 3,
+      (Math.random() - 0.5) * 3.6
     );
     m._v = v; m._life = 0.9 + Math.random() * 0.6; m._age = 0;
     m._spin = (Math.random() - 0.5) * 10;
@@ -492,16 +618,16 @@ function burst(pos, color) {
     G.particles.push(m);
   }
 
-  // ── Schicht 4: kurzlebiges Rauch-/Nachglühen (wächst, verblasst langsam) ──
+  // ── Schicht 4: kurzlebiges Rauch-/Nachglühen (wächst, verblasst langsam) ── [+20%]
   const smokeCount = 8;
   for (let i = 0; i < smokeCount; i++) {
     const m = new THREE.Mesh(
-      new THREE.SphereGeometry(0.12 + Math.random() * 0.08, 6, 6),
+      new THREE.SphereGeometry(0.144 + Math.random() * 0.096, 6, 6),
       new THREE.MeshBasicMaterial({ color: 0x553311, transparent: true, opacity: 0.5 })
     );
     m.position.copy(pos).addScaledVector(new THREE.Vector3(
       (Math.random()-0.5), Math.random()*0.5, (Math.random()-0.5)
-    ), 0.2);
+    ), 0.24);
     m._v = new THREE.Vector3((Math.random()-0.5)*0.6, Math.random()*0.8+0.2, (Math.random()-0.5)*0.6);
     m._life = 1.1 + Math.random() * 0.5; m._age = 0; m._isSmoke = true;
     scene.add(m);
@@ -638,6 +764,7 @@ function setupControllers() {
 
   for (let i = 0; i < 2; i++) {
     const ctrl = renderer.xr.getController(i);
+    const grip = renderer.xr.getControllerGrip(i);
 
     ctrl.addEventListener('selectstart', () => {
       const tmp = new THREE.Matrix4().identity().extractRotation(ctrl.matrixWorld);
@@ -647,6 +774,15 @@ function setupControllers() {
       const orig = new THREE.Vector3().setFromMatrixPosition(ctrl.matrixWorld).add(muzzleOffset);
       const dir  = new THREE.Vector3(0, 0, -1).applyMatrix4(tmp);
       shoot(orig, dir);
+    });
+
+    // Merkt sich, ob dieser Controller der linke ist (für Y-Taste/Restart)
+    ctrl.addEventListener('connected', (e) => {
+      ctrl.userData.handedness = e.data.handedness;
+      ctrl.userData.gamepad = e.data.gamepad;
+    });
+    ctrl.addEventListener('disconnected', () => {
+      ctrl.userData.gamepad = null;
     });
 
     // Laser beam — startet an der Mündung (gleicher Versatz wie Raycast-Ursprung)
@@ -676,7 +812,31 @@ function setupControllers() {
     }
 
     scene.add(ctrl);
+    G.controllers = G.controllers || [];
+    G.controllers.push(ctrl);
   }
+}
+
+// Y-Taste am linken Controller → Spiel neu starten.
+// Standard-Mapping (oculus-touch / Meta Quest): Button-Index 5 = Y (links) / B (rechts).
+let yButtonWasPressed = false;
+function checkRestartButton() {
+  if (!G.controllers) return;
+  for (const ctrl of G.controllers) {
+    const gp = ctrl.userData && ctrl.userData.gamepad;
+    if (!gp || ctrl.userData.handedness !== 'left') continue;
+    const yButton = gp.buttons[5]; // Y-Taste am linken Controller
+    const pressed = !!(yButton && yButton.pressed);
+    if (pressed && !yButtonWasPressed) {
+      restartGame();
+    }
+    yButtonWasPressed = pressed;
+  }
+}
+
+function restartGame() {
+  liveLog('[Y] Neustart über Y-Taste ausgelöst');
+  startGame();
 }
 
 // Desktop mouse fallback
@@ -695,6 +855,7 @@ let lastSec  = 0;
 
 renderer.setAnimationLoop(() => {
   const dt = clock.getDelta();
+  checkRestartButton();
   const t  = clock.elapsedTime;
 
   if (G.active) {
