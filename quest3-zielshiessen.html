@@ -477,11 +477,12 @@ function fixMaterials(root, emissiveBoost = 0) {
           mat.roughness = Math.max(mat.roughness, 0.4);
         }
         if (emissiveBoost > 0 && mat.emissive !== undefined) {
-          // Verstärkt das Eigenleuchten der Textur/Oberfläche, ohne die
-          // Grundfarbe zu verändern — sorgt für einen kräftigeren Glow,
-          // besonders auf den helleren/farbigen Materialbereichen.
-          if (mat.emissive.r === 0 && mat.emissive.g === 0 && mat.emissive.b === 0 && mat.color) {
-            mat.emissive.copy(mat.color);
+          // Verstärkt das Eigenleuchten der Textur/Oberfläche deutlich
+          // sichtbar — nutzt eine aufgehellte Version der Grundfarbe,
+          // da reines Kopieren oft zu dunklen/gedeckten Tönen führt,
+          // die kaum auffallen.
+          if (mat.color) {
+            mat.emissive.copy(mat.color).multiplyScalar(1.6).clampScalar(0, 1);
           }
           mat.emissiveIntensity = emissiveBoost;
         }
@@ -520,7 +521,7 @@ function loadGLBFromBase64(base64, targetSize = 1.8, emissiveBoost = 0) {
 function loadModel() {
   // UFO Modell — 15% kleiner als zuvor (1.8 → 1.53), mit verstärktem
   // Eigenleuchten für besseren Glow-Effekt, besonders aus der Ferne.
-  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 0.55);
+  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 2.5);
 }
 
 let interceptorTemplate = null;
@@ -576,6 +577,18 @@ function spawnUFO(speedMult = 1) {
   }));
   beacon.scale.setScalar(0.3);
   group.add(beacon);
+
+  // Zusätzliche, deutlich sichtbare Glow-Aura direkt um den Modellkörper.
+  // Da reines emissiveIntensity ohne HDR-Tonemapping oft kaum auffällt,
+  // sorgt dieses additive Sprite garantiert für einen wahrnehmbaren
+  // Leucht-Effekt rund um das UFO selbst (nicht nur als Fernpunkt).
+  const aura = new THREE.Sprite(new THREE.SpriteMaterial({
+    map: getBeaconTexture(), color: 0x55ffcc, transparent: true,
+    depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+    opacity: 0.55
+  }));
+  aura.scale.setScalar(1.7); // umhüllt das gesamte Modell sichtbar
+  group.add(aura);
 
   // Spawn-Position: enger Frontalkegel statt breitem Bogen — UFOs sollen
   // klar von vorne anfliegen, nicht von der Seite erscheinen.
@@ -1079,18 +1092,15 @@ renderer.setAnimationLoop(() => {
     const proj = G.bullets[i];
     proj.age += dt;
 
-    // Homing: bei einem gültigen Ziel wird die Flugrichtung jeden Frame neu
-    // auf die AKTUELLE Position des UFOs ausgerichtet. Vorher flog der
-    // Torpedo zu einem einmalig berechneten, festen Punkt — bei den großen
-    // Distanzen und der UFO-Geschwindigkeit war das Ziel oft längst nicht
-    // mehr dort, wenn der Torpedo ankam ("Treffer ohne Explosion").
+    // Homing: bei einem beim Abschuss bereits getroffenen Ziel wird die
+    // Flugrichtung jeden Frame neu auf die AKTUELLE Position des UFOs
+    // ausgerichtet.
     const stillExists = proj.targetUfo && G.ufos.includes(proj.targetUfo);
     if (stillExists) {
       const toTarget = proj.targetUfo.group.position.clone().sub(proj.group.position);
       const distToTarget = toTarget.length();
       if (distToTarget > 0.001) {
         toTarget.normalize();
-        // Sanftes Einlenken statt sofortigem Snap, wirkt wie ein lenkbares Geschoss
         proj.dir.lerp(toTarget, Math.min(1, dt * 10)).normalize();
       }
     }
@@ -1102,21 +1112,30 @@ renderer.setAnimationLoop(() => {
     const pulse = 1 + Math.sin(t * 20) * 0.15;
     proj.group.children[0].scale.setScalar(pulse);
 
-    // Treffer wird durch tatsächliche Nähe zum (jetzt aktuellen) Ziel
-    // ausgelöst, nicht durch eine vorab berechnete Flugzeit.
+    // Treffer-Prüfung: nicht nur gegen das beim Abschuss erkannte Ziel,
+    // sondern gegen ALLE noch existierenden UFOs entlang der Flugbahn.
+    // Das behebt den Kern-Bug: wenn ein Spieler bewusst mit Vorhalt auf
+    // ein sich bewegendes UFO zielt, verfehlt der Schuss-Raycast das UFO
+    // zum Abschusszeitpunkt (es ist ja noch nicht am Zielpunkt) — ohne
+    // diese laufende Prüfung hätte der Torpedo dann nie ein Ziel und
+    // könnte selbst einen geometrisch exakten Treffer nicht erkennen.
     let hitNow = false;
-    if (stillExists) {
-      const distNow = proj.group.position.distanceTo(proj.targetUfo.group.position);
-      if (distNow < proj.targetUfo.radius + 0.25) hitNow = true;
+    let hitUfo = null;
+    for (const u of G.ufos) {
+      const d = proj.group.position.distanceTo(u.group.position);
+      if (d < u.radius + 0.3) {
+        hitNow = true;
+        hitUfo = u;
+        break;
+      }
     }
 
     const maxLifeExceeded = proj.age > 6; // Sicherheitsnetz gegen endlos fliegende Torpedos
-    const outOfRange = !stillExists && proj.group.position.distanceTo(proj.endPoint) < 0.15;
 
-    if (hitNow || maxLifeExceeded || outOfRange) {
+    if (hitNow || maxLifeExceeded) {
       if (hitNow && !proj.resolved) {
         proj.resolved = true;
-        resolveProjectileHit(proj);
+        resolveProjectileHit({ targetUfo: hitUfo });
       }
       scene.remove(proj.group);
       G.bullets.splice(i, 1);
