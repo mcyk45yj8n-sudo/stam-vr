@@ -526,7 +526,7 @@ function loadGLBFromBase64(base64, targetSize = 1.8, emissiveBoost = 0) {
 function loadModel() {
   // UFO Modell — 15% kleiner als zuvor (1.8 → 1.53), mit verstärktem
   // Eigenleuchten für besseren Glow-Effekt, besonders aus der Ferne.
-  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 0.35);
+  return loadGLBFromBase64(UFO_MODEL_BASE64, 1.53, 0.08);
 }
 
 let interceptorTemplate = null;
@@ -545,8 +545,30 @@ function loadInterceptor() {
           const maxDim = Math.max(size.x, size.y, size.z);
           root.position.sub(center);
           // Kleinere Skalierung — Controller-Größe (Pistolen-Maßstab)
-          root.scale.setScalar(0.22 / maxDim);
+          const scaleFactor = 0.22 / maxDim;
+          root.scale.setScalar(scaleFactor);
           fixMaterials(root);
+
+          // Exakte Triebwerksposition aus der Modellgeometrie selbst
+          // ermitteln, statt sie zu schätzen: das zylinderförmige
+          // Heck-Bauteil heißt im Originalmodell "main_engine". Wir
+          // finden sein Mesh per Name, berechnen seinen geometrischen
+          // Mittelpunkt (Mittelachse des Zylinders) und merken uns diese
+          // Position relativ zum root-Objekt (nach Zentrierung/Skalierung),
+          // damit Glow und Partikel-Trail exakt dort ansetzen können.
+          let enginePos = new THREE.Vector3(0, 0, 0.05); // Fallback falls Mesh nicht gefunden
+          root.updateMatrixWorld(true);
+          root.traverse(child => {
+            if (child.isMesh && /main_engine$/i.test(child.name)) {
+              const localBox = new THREE.Box3().setFromObject(child);
+              const localCenter = localBox.getCenter(new THREE.Vector3());
+              // localCenter ist bereits in Welt-/root-relativen Koordinaten,
+              // da setFromObject die aktuelle Transformationshierarchie nutzt.
+              enginePos = root.worldToLocal(localCenter.clone());
+            }
+          });
+          root.userData.enginePosition = enginePos;
+
           resolve(root);
         },
         err => reject(err)
@@ -880,15 +902,22 @@ function setupControllers() {
       // ergänzt werden, z.B.: gun.rotation.y = Math.PI / 2;
       ctrl.add(gun);
 
-      // Triebwerks-Glow am hinteren Ende des Modells (entgegengesetzt der
-      // Mündung/Schussrichtung, also Richtung +Z, zur Hand hin).
+      // Triebwerks-Glow exakt an der Mittelachse des zylinderförmigen
+      // Heck-Bauteils ("main_engine"), wie aus der Modellgeometrie
+      // ermittelt. Da das Modell um 180° auf der Y-Achse gedreht wurde,
+      // muss dieselbe Rotation auf die Engine-Position angewendet werden
+      // (180°-Y-Rotation kehrt X und Z um, Y bleibt unverändert).
+      const enginePos = (interceptorTemplate.userData && interceptorTemplate.userData.enginePosition)
+        || new THREE.Vector3(0, 0, 0.05);
+      const rotatedEnginePos = new THREE.Vector3(-enginePos.x, enginePos.y, -enginePos.z);
+
       engineGlow = new THREE.Sprite(new THREE.SpriteMaterial({
         map: getBeaconTexture(), color: 0x33aaff, transparent: true,
         depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
         opacity: 0.85
       }));
-      engineGlow.scale.setScalar(0.05);
-      engineGlow.position.set(0, 0, 0.1); // hinteres Ende, nah am Lauf-Gegenpunkt
+      engineGlow.scale.setScalar(0.035);
+      engineGlow.position.copy(rotatedEnginePos);
       ctrl.add(engineGlow);
     } else {
       // Fallback falls Modell nicht geladen werden konnte
@@ -899,7 +928,35 @@ function setupControllers() {
     }
 
     ctrl.userData.engineGlow = engineGlow;
-    ctrl.userData.trailPositions = []; // für Bewegungs-Leuchtspur
+
+    // ── Kometen-Partikeltrail am Triebwerk ──
+    // Pool fester Größe: jeder Partikel hat eigenes Alter/Lebensdauer und
+    // wird nach Ablauf am aktuellen Triebwerkspunkt neu emittiert. Eine
+    // einzige Points-Wolke pro Controller (günstig: 1 Draw-Call), die
+    // durch viele, kurzlebige, leicht gestreute Partikel den Eindruck
+    // einer lang gezogenen, tropfenförmigen Kometenspur erzeugt.
+    const trailCount = 60;
+    const trailGeo = new THREE.BufferGeometry();
+    const trailPositions = new Float32Array(trailCount * 3);
+    for (let k = 0; k < trailCount; k++) trailPositions[k * 3 + 1] = -10000; // alle initial unsichtbar
+    const trailGeoAttr = new THREE.BufferAttribute(trailPositions, 3);
+    trailGeo.setAttribute('position', trailGeoAttr);
+    const trailMat = new THREE.PointsMaterial({
+      map: getBeaconTexture(), color: 0x55bbff, transparent: true,
+      depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
+      size: 0.018, sizeAttenuation: true, opacity: 0.9
+    });
+    const trailPoints = new THREE.Points(trailGeo, trailMat);
+    scene.add(trailPoints); // Welt-Raum, nicht am Controller — Partikel bleiben zurück, statt mitzuwandern
+
+    ctrl.userData.trail = {
+      points: trailPoints,
+      ages: new Float32Array(trailCount).fill(Infinity), // Infinity = inaktiv/frei
+      lifetimes: new Float32Array(trailCount),
+      velocities: Array.from({ length: trailCount }, () => new THREE.Vector3()),
+      nextIndex: 0,
+      lastEnginePos: null
+    };
 
     scene.add(ctrl);
     G.controllers = G.controllers || [];
@@ -948,44 +1005,85 @@ renderer.setAnimationLoop(() => {
   checkRestartButton();
   const t  = clock.elapsedTime;
 
-  // ── Triebwerks-Leuchtspur an den Controllern ──
-  // Pulsiert leicht im Stand, und hinterlässt bei schneller Handbewegung
-  // kurzlebige Glühpunkte, die wie ein nachziehender Schweif wirken.
+  // ── Kometen-Partikeltrail am Triebwerk ──
+  // Pulsiert leicht im Stand. Bei Bewegung werden laufend mehrere
+  // Partikel pro Frame am exakten Triebwerkspunkt emittiert, die kurz
+  // leben und sich entlang der Bewegungsrichtung strecken — das erzeugt
+  // eine lang gezogene, tropfenförmige Kometenspur statt einzelner
+  // sichtbarer Geister-Sprites.
   if (G.controllers) {
     for (const ctrl of G.controllers) {
       const glow = ctrl.userData && ctrl.userData.engineGlow;
-      if (!glow) continue;
+      const trailData = ctrl.userData && ctrl.userData.trail;
+      if (!glow || !trailData) continue;
 
       // Sanftes Pulsieren im Ruhezustand
-      glow.scale.setScalar(0.05 + Math.sin(t * 8 + ctrl.id) * 0.012);
+      glow.scale.setScalar(0.035 + Math.sin(t * 8 + ctrl.id) * 0.008);
 
-      // Aktuelle Weltposition des Triebwerks ermitteln
       const worldPos = new THREE.Vector3();
       glow.getWorldPosition(worldPos);
 
-      const trail = ctrl.userData.trailPositions;
-      const lastPos = trail.length ? trail[trail.length - 1].pos : null;
-      const moveDist = lastPos ? worldPos.distanceTo(lastPos) : 0;
+      const lastPos = trailData.lastEnginePos;
+      const moveVec = lastPos ? worldPos.clone().sub(lastPos) : new THREE.Vector3();
+      const moveSpeed = dt > 0 ? moveVec.length() / dt : 0;
+      trailData.lastEnginePos = worldPos.clone();
 
-      // Nur bei spürbarer Bewegung neue Spur-Partikel erzeugen
-      if (moveDist > 0.015) {
-        const ghost = new THREE.Sprite(new THREE.SpriteMaterial({
-          map: getBeaconTexture(), color: 0x33aaff, transparent: true,
-          depthWrite: false, blending: THREE.AdditiveBlending, fog: false,
-          opacity: 0.5
-        }));
-        ghost.position.copy(worldPos);
-        ghost.scale.setScalar(0.045);
-        ghost._v = new THREE.Vector3(0, 0, 0);
-        ghost._life = 0.18; // kurzer, knapper Schweif statt langer Spur
-        ghost._age = 0;
-        ghost._isTrailGhost = true; // eigene Fade-Logik: schrumpft & verblasst
-        scene.add(ghost);
-        G.particles.push(ghost);
+      // Emissionsrate skaliert mit Bewegungsgeschwindigkeit — schnelle
+      // Bewegung erzeugt eine dichtere, längere Spur.
+      const emitCount = Math.min(8, Math.round(moveSpeed * 25));
 
-        trail.push({ pos: worldPos.clone() });
-        if (trail.length > 8) trail.shift();
+      const { ages, lifetimes, velocities, points } = trailData;
+      const posAttr = points.geometry.attributes.position;
+
+      for (let n = 0; n < emitCount; n++) {
+        const idx = trailData.nextIndex;
+        trailData.nextIndex = (idx + 1) % ages.length;
+
+        // Tropfenform: Hauptstreuung entgegen der Bewegungsrichtung
+        // (zieht den Schweif nach hinten), leichte Querstreuung für Breite.
+        const backDir = moveSpeed > 0.001 ? moveVec.clone().normalize().multiplyScalar(-1) : new THREE.Vector3(0, 0, 1);
+        const lateral = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.4,
+          (Math.random() - 0.5) * 0.4,
+          (Math.random() - 0.5) * 0.4
+        );
+        const startOffset = lateral.multiplyScalar(0.008);
+
+        posAttr.array[idx * 3]     = worldPos.x + startOffset.x;
+        posAttr.array[idx * 3 + 1] = worldPos.y + startOffset.y;
+        posAttr.array[idx * 3 + 2] = worldPos.z + startOffset.z;
+
+        velocities[idx].copy(backDir).multiplyScalar(0.3 + Math.random() * 0.5).add(
+          new THREE.Vector3((Math.random()-0.5)*0.15, (Math.random()-0.5)*0.15, (Math.random()-0.5)*0.15)
+        );
+
+        ages[idx] = 0;
+        lifetimes[idx] = 0.12 + Math.random() * 0.1; // kurze Lebensdauer, wie gewünscht
       }
+
+      // Alle aktiven Partikel weiterbewegen und ausblenden lassen
+      let anyChanged = emitCount > 0;
+      for (let idx = 0; idx < ages.length; idx++) {
+        if (ages[idx] === Infinity) continue;
+        ages[idx] += dt;
+        if (ages[idx] >= lifetimes[idx]) {
+          ages[idx] = Infinity;
+          // Da PointsMaterial keine Opacity pro Punkt kennt, muss ein
+          // abgelaufener Partikel aus dem Sichtbereich verschoben werden,
+          // statt nur als "inaktiv" markiert zu bleiben — sonst bliebe er
+          // als stehender Lichtpunkt sichtbar.
+          posAttr.array[idx * 3]     = 0;
+          posAttr.array[idx * 3 + 1] = -10000;
+          posAttr.array[idx * 3 + 2] = 0;
+          anyChanged = true;
+          continue;
+        }
+        anyChanged = true;
+        posAttr.array[idx * 3]     += velocities[idx].x * dt;
+        posAttr.array[idx * 3 + 1] += velocities[idx].y * dt;
+        posAttr.array[idx * 3 + 2] += velocities[idx].z * dt;
+      }
+      if (anyChanged) posAttr.needsUpdate = true;
     }
   }
 
