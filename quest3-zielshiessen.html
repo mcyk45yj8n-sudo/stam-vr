@@ -581,14 +581,14 @@ function spawnUFO(speedMult = 1) {
   // Bewegungsrichtung: geradlinig vom Spawnpunkt durch die Mitte hindurch
   // auf den Spieler zu und darüber hinaus — kein Rauschen mehr, damit die
   // Flugbahn klar nachvollziehbar linear bleibt (außer beim Strafing).
-  const baseSpeed = (0.72 + Math.random() * 0.72) * speedMult; // +20% gegenüber vorher
+  const baseSpeed = (1.6 + Math.random() * 1.6) * speedMult; // deutlich schneller — wirken wie flinke Lichtpunkte
   const dir = group.position.clone().negate().normalize();
 
   const rotSpeed = (6 + Math.random() * 8) * (Math.random() > 0.5 ? 1 : -1);
 
   // Strafe-Verhalten: manche UFOs scheren später aus und fliegen seitlich
   // vor dem Spieler hin und her statt direkt anzufliegen.
-  const willStrafe = Math.random() < 0.4; // ~40% der UFOs strafen irgendwann
+  const willStrafe = Math.random() < 0.65; // erhöht — mehr Dynamik, da weniger UFOs pro Welle
   const strafeStartDist = 8 + Math.random() * 6; // ab welcher Nähe das Strafing beginnt
 
   scene.add(group);
@@ -600,6 +600,8 @@ function spawnUFO(speedMult = 1) {
                 dodgeTimer: 0, dodgeCooldown: 1.5 + Math.random() * 2,
                 willStrafe, strafeStartDist, strafing: false,
                 strafeDir: (Math.random() > 0.5 ? 1 : -1),
+                strafeDirY: (Math.random() > 0.5 ? 1 : -1),
+                strafeMode: Math.floor(Math.random() * 3), // 0=horizontal, 1=vertikal, 2=beides
                 strafeChangeTimer: 0,
                 radius: hitRadius };
   G.ufos.push(ufo);
@@ -611,7 +613,7 @@ const waveInterval = 8;   // seconds between waves
 
 function triggerWave() {
   G.wave++;
-  const count = Math.min(1 + Math.floor(G.wave / 2), 3);   // 1–3 UFOs
+  const count = Math.min(1 + Math.floor(G.wave / 3), 2);   // 1–2 UFOs statt vorher 1–3
   const speedMult = 1 + (G.wave - 1) * 0.12;
   for (let i = 0; i < count; i++) {
     setTimeout(() => spawnUFO(speedMult), i * 600);
@@ -934,22 +936,31 @@ renderer.setAnimationLoop(() => {
       }
 
       if (u.strafing) {
-        // Seitliche Bewegung quer zur Blickrichtung des Spielers, mit
-        // gelegentlichem Richtungswechsel für ein unberechenbares Muster.
+        // Dynamisches Ausweichen: je nach UFO horizontal, vertikal oder
+        // beides gleichzeitig — mit unabhängigen, unregelmäßigen
+        // Richtungswechseln für ein deutlich unberechenbareres Muster.
         u.strafeChangeTimer += dt;
-        if (u.strafeChangeTimer > 1.0 + Math.random() * 1.3) {
+        if (u.strafeChangeTimer > 0.7 + Math.random() * 1.1) {
           u.strafeChangeTimer = 0;
           u.strafeDir *= -1;
+          if (Math.random() < 0.6) u.strafeDirY *= -1; // nicht immer synchron wechseln
         }
-        const lateral = new THREE.Vector3(u.strafeDir, 0, 0);
+
+        const lateral = new THREE.Vector3(
+          (u.strafeMode === 0 || u.strafeMode === 2) ? u.strafeDir : 0,
+          (u.strafeMode === 1 || u.strafeMode === 2) ? u.strafeDirY * 0.7 : 0,
+          0
+        );
         const towardPlayer = group.position.clone().negate().normalize();
-        // Mischung: leicht weiter annähern, aber primär seitlich pendeln
         dir.copy(lateral.multiplyScalar(1.3).add(towardPlayer.multiplyScalar(0.25))).normalize();
 
-        // Lateralen Bereich begrenzen, damit das Ausweichen sichtbar vor dem
-        // Spieler bleibt statt aus dem 200°-Sichtfeld herauszulaufen.
+        // Bereich begrenzen, damit das Ausweichen sichtbar vor dem Spieler
+        // bleibt statt aus dem Sichtfeld oder zu hoch/tief zu laufen.
         if (Math.abs(group.position.x) > 9) {
           u.strafeDir = -Math.sign(group.position.x);
+        }
+        if (group.position.y < 1 || group.position.y > 6) {
+          u.strafeDirY = -Math.sign(group.position.y - 3.5);
         }
       } else {
         // Anflugphase: strikt geradlinige Bewegung, keine Richtungsänderung.
@@ -981,15 +992,24 @@ renderer.setAnimationLoop(() => {
       // Glow pulse
       if (u.glow) u.glow.intensity = 1.5 + Math.sin(t * 4) * 0.8;
 
-      // Beacon: aus der Ferne groß & hell (gut sichtbarer Anflugpunkt),
-      // blendet aus, sobald das UFO nah genug ist, dass das Modell selbst
-      // gut erkennbar ist. Macht die komplette Flugbahn nachvollziehbar.
+      // Beacon: aus großer Ferne nur ein winziger, sternartiger Lichtpunkt.
+      // Das UFO-Modell selbst bleibt unsichtbar, bis es nah genug ist —
+      // so wirkt das UFO zunächst wie ein bewegtes Licht am Himmel und
+      // wird erst kurz vorher als Flugkörper erkennbar.
       if (u.beacon) {
         const distNow = camera.position.distanceTo(group.position);
-        const nearFade  = THREE.MathUtils.clamp((distNow - 6) / 10, 0, 1);  // ab ~16 Einheiten voll sichtbar
-        const farBoost  = THREE.MathUtils.clamp(distNow / 50, 0.4, 2.2);     // wächst mit der Distanz
-        u.beacon.material.opacity = nearFade * (0.6 + Math.sin(t * 6) * 0.25);
-        u.beacon.scale.setScalar(0.9 * farBoost);
+        const handoff = 15; // Distanz, ab der das Modell übernimmt
+        const isFar = distNow > handoff;
+
+        u.beacon.visible = isFar;
+        u.model.visible  = !isFar;
+
+        if (isFar) {
+          // Punktgröße bleibt klein und nahezu konstant — wirkt wie ein Stern,
+          // nicht wie ein wachsendes Objekt.
+          u.beacon.scale.setScalar(0.16);
+          u.beacon.material.opacity = 0.75 + Math.sin(t * 6) * 0.2;
+        }
       }
     });
   }
